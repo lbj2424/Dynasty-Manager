@@ -1,72 +1,61 @@
-import { el, card, button, badge } from "../components.js";
-import { getState, newGameState, ensureAppState, saveToSlot, loadFromSlot, deleteSlot, setActiveSaveSlot } from "../../state.js";
-
-const SLOTS = ["A","B","C"];
+import { el, card, button } from "../components.js";
+import { newGameState, saveToSlot, loadFromSlot, deleteSlot } from "../../state.js";
+import { generateLeague } from "../../gen/league.js";
 
 export function HomeScreen(){
   const root = el("div", {}, []);
 
-  root.appendChild(card("Home", "Choose a save slot or start fresh.", [
-    el("div", { class:"row" }, [
-      badge("Saves: A / B / C"),
-      badge("Local only"),
-      badge("Desktop-first")
-    ]),
+  // build list of teams for dropdown
+  const leaguePreview = generateLeague({ seed: "v1_seed" });
+  const teams = leaguePreview.teams;
+
+  const teamSelect = el("select", {}, teams.map((t, idx) =>
+    el("option", { value:String(idx) }, `${t.name} (${t.conference})`)
+  ));
+
+  root.appendChild(card("Dynasty Manager", "Pick a team, then pick a save slot.", [
+    el("div", { class:"p" }, "Choose Team:"),
+    teamSelect,
     el("div", { class:"sep" }),
-    el("div", { class:"grid" }, SLOTS.map(slot => renderSlot(slot)))
+
+    slotCard("A", teamSelect),
+    slotCard("B", teamSelect),
+    slotCard("C", teamSelect),
   ]));
 
   return root;
 }
 
-function renderSlot(slot){
-  const raw = localStorage.getItem("dynasty_save_" + slot);
-  const has = !!raw;
-
-  const actions = el("div", { class:"row" }, [
-    button(has ? "Load" : "New", {
-      primary: true,
-      onClick: () => {
-        if (has){
-          const ok = loadFromSlot(slot);
-          if (ok) location.hash = "#/dashboard";
-        } else {
-          ensureAppState(null);
-          setActiveSaveSlot(slot);
-          saveToSlot(slot);
+function slotCard(slot, teamSelect){
+  return el("div", {}, [
+    el("div", { class:"h2" }, `Save Slot ${slot}`),
+    el("div", { class:"row" }, [
+      button("New Game", {
+        primary: true,
+        onClick: () => {
+          const userTeamIndex = Number(teamSelect.value || 0);
+          const st = newGameState({ userTeamIndex });
+          // save and load
+          localStorage.setItem("dynasty_active_slot", slot);
+          localStorage.setItem("dynasty_save_" + slot, JSON.stringify(st));
+          loadFromSlot(slot);
           location.hash = "#/dashboard";
         }
-      }
-    }),
-    button("Save", {
-      onClick: () => {
-        // If empty slot, create a new game first
-        const st = getState();
-        if (!st) ensureAppState(null);
-        saveToSlot(slot);
-        alert(`Saved to Slot ${slot}`);
-      }
-    }),
-    button("Delete", {
-      danger: true,
-      onClick: () => {
-        deleteSlot(slot);
-        location.reload();
-      }
-    })
-  ]);
-
-  const info = has ? "Saved game found." : "Empty slot.";
-
-  return el("div", { class:"card" }, [
-    el("div", { class:"spread" }, [
-      el("div", {}, [
-        el("div", { class:"h2" }, `Slot ${slot}`),
-        el("div", { class:"p" }, info)
-      ]),
-      badge(has ? "READY" : "EMPTY")
+      }),
+      button("Load", {
+        onClick: () => {
+          const ok = loadFromSlot(slot);
+          if (!ok) return alert("No save found in this slot.");
+          location.hash = "#/dashboard";
+        }
+      }),
+      button("Delete", {
+        onClick: () => {
+          deleteSlot(slot);
+          alert(`Deleted Slot ${slot}`);
+        }
+      })
     ]),
-    el("div", { class:"sep" }),
-    actions
+    el("div", { class:"sep" })
   ]);
 }
