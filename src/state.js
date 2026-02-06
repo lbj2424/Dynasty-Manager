@@ -2,7 +2,13 @@ import { generateLeague } from "./gen/league.js";
 import { generateNCAAProspects, generateInternationalPool } from "./gen/prospects.js";
 import { generateFreeAgents } from "./gen/freeAgents.js";
 import { generateTeamRoster } from "./gen/players.js";
-import { HOURS_BANK_MAX, HOURS_PER_WEEK, SEASON_WEEKS, PHASES, SALARY_CAP } from "./data/constants.js";
+import {
+  HOURS_BANK_MAX,
+  HOURS_PER_WEEK,
+  SEASON_WEEKS,
+  PHASES,
+  SALARY_CAP
+} from "./data/constants.js";
 import { clamp } from "./utils.js";
 
 const KEY_ACTIVE = "dynasty_active_slot";
@@ -15,35 +21,67 @@ export function getState(){ return STATE; }
 export function ensureAppState(loadedOrNull){
   if (loadedOrNull){
     STATE = loadedOrNull;
+    // basic migration safety
+    STATE.game.history ??= [];
+    STATE.game.league?.teams?.forEach(t => {
+      t.wins ??= 0;
+      t.losses ??= 0;
+      t.roster?.forEach(p => {
+        p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
+        p.happiness ??= 70;
+      });
+    });
     return;
   }
   STATE = newGameState({ userTeamIndex: 0 });
 }
 
-// -------- NEW: allow team selection ----------
+// -------------------- NEW GAME --------------------
 export function newGameState({ userTeamIndex=0 } = {}){
   const year = 1;
   const league = generateLeague({ seed: "v1_seed" });
 
-  // build rosters for ALL teams
+  // Ensure wins/losses exist (CRITICAL)
   for (const t of league.teams){
-    t.roster = generateTeamRoster({ teamName: t.name, teamRating: t.rating, year });
-    t.cap.payroll = Number(t.roster.reduce((sum,p)=> sum + p.contract.salary, 0).toFixed(1));
-    // ensure under cap in v1 by scaling down slightly if needed
+    t.wins ??= 0;
+    t.losses ??= 0;
+    t.roster ??= [];
+    t.cap ??= { cap: SALARY_CAP, payroll: 0 };
+    t.cap.cap ??= SALARY_CAP;
+    t.cap.payroll ??= 0;
+  }
+
+  // Build rosters for ALL teams + ensure safe player fields
+  for (const t of league.teams){
+    t.roster = generateTeamRoster({ teamName: t.name, teamRating: t.rating, year }) || [];
+
+    for (const p of t.roster){
+      p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
+      p.happiness ??= 70;
+      // optional placeholders for future systems
+      p.energy ??= 100;
+      p.dev ??= p.dev || { focus: "Balanced", points: 7 };
+    }
+
+    t.cap.payroll = Number(t.roster.reduce((sum,p)=> sum + (p.contract?.salary || 0), 0).toFixed(1));
+
+    // Ensure under cap by scaling down slightly if needed
     if (t.cap.payroll > t.cap.cap){
-      const scale = t.cap.cap / t.cap.payroll;
+      const scale = t.cap.cap / Math.max(1, t.cap.payroll);
       for (const p of t.roster){
-        p.contract.salary = Number((p.contract.salary * scale).toFixed(1));
+        if (p.contract?.salary != null){
+          p.contract.salary = Number((p.contract.salary * scale).toFixed(1));
+        }
       }
-      t.cap.payroll = Number(t.roster.reduce((sum,p)=> sum + p.contract.salary, 0).toFixed(1));
+      t.cap.payroll = Number(t.roster.reduce((sum,p)=> sum + (p.contract?.salary || 0), 0).toFixed(1));
     }
   }
 
   // schedule: 20 weeks, each team plays 4 games/week ~ 80 games
-  const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
+  const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS);
 
   return {
-    meta: { version: "0.3.0", createdAt: Date.now() },
+    meta: { version: "0.3.1", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -52,7 +90,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
       seasonWeeks: SEASON_WEEKS,
       schedule,
       hours: {
-        available: 25,
+        available: HOURS_PER_WEEK,
         banked: 0,
         bankMax: HOURS_BANK_MAX
       },
@@ -62,21 +100,20 @@ export function newGameState({ userTeamIndex=0 } = {}){
         tab: "NCAA",
         ncaa: generateNCAAProspects({ year, count: 100, seed: "ncaa" }),
         intlPool: generateInternationalPool({ year, count: 100, seed: "intl" }),
-        // NEW: who YOU scouted
         scoutedNCAAIds: [],
         scoutedIntlIds: [],
-        // NEW: "found" intl timers (expire after 3 weeks if not declared)
         intlFoundWeekById: {},
         intlLocation: null
       },
       playoffs: null,
       offseason: { freeAgents: null, draft: null },
       inbox: [],
-      history: [],
+      history: []
     }
   };
 }
 
+// -------------------- SAVES --------------------
 export function setActiveSaveSlot(slot){
   STATE.activeSaveSlot = slot;
   localStorage.setItem(KEY_ACTIVE, slot);
@@ -115,6 +152,7 @@ export function deleteSlot(slot){
   if (active === slot) localStorage.removeItem(KEY_ACTIVE);
 }
 
+// -------------------- HOURS --------------------
 export function spendHours(n){
   const h = STATE.game.hours;
   let need = n;
@@ -131,22 +169,22 @@ export function spendHours(n){
   return need === 0;
 }
 
-// ---------- NEW: weekly sim + scouting decay ----------
+// -------------------- REGULAR SEASON --------------------
 export function advanceWeek(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
 
-  // simulate current week's games before incrementing week
+  // simulate games for this week
   simWeekGames(g);
 
+  // increment week
   g.week += 1;
 
   // hours rollover
-  const newBanked = clamp(g.hours.banked + g.hours.available, 0, g.hours.bankMax);
-  g.hours.banked = newBanked;
+  g.hours.banked = clamp(g.hours.banked + g.hours.available, 0, g.hours.bankMax);
   g.hours.available = HOURS_PER_WEEK;
 
-  // scouting decay: intl found but not declared expires after 3 weeks
+  // expire intl "found" but not declared after 3 weeks
   expireIntlFoundProspects(g);
 
   if (g.week > g.seasonWeeks){
@@ -158,55 +196,51 @@ export function advanceWeek(){
 function expireIntlFoundProspects(g){
   const found = g.scouting.intlFoundWeekById || {};
   const nowWeek = g.week;
-  const pool = g.scouting.intlPool;
 
   const keep = [];
-  for (const p of pool){
+  for (const p of g.scouting.intlPool){
     if (p.declared) { keep.push(p); continue; }
 
     const fw = found[p.id];
     if (!fw) { keep.push(p); continue; }
 
-    // after 3 weeks, they disappear if you didn't convince them
     if ((nowWeek - fw) >= 3){
-      // vanish: also remove from scouted list so you can’t draft them
+      // remove from "scouted" so you can't see hidden info later
       g.scouting.scoutedIntlIds = g.scouting.scoutedIntlIds.filter(x => x !== p.id);
       delete found[p.id];
       continue;
     }
+
     keep.push(p);
   }
+
   g.scouting.intlPool = keep;
   g.scouting.intlFoundWeekById = found;
 }
 
-// --- schedule + sim ---
-function generateWeeklySchedule(teamIds, weeks, gamesPerWeekPerTeam){
-  // each week: pair teams randomly without repeats that week
+function generateWeeklySchedule(teamIds, weeks){
   const schedule = [];
   for (let w=1; w<=weeks; w++){
-    const ids = teamIds.slice();
-    shuffle(ids);
     const games = [];
 
-    // each team needs gamesPerWeekPerTeam games, but pairing gets tricky
-    // v1: create 2 games per team by pairing once (16 games = 32 teams)
-    // and do it twice per week => 4 games per team
+    // 2 passes of random pairings => 4 games per team each week
     for (let pass=0; pass<2; pass++){
+      const ids = teamIds.slice();
       shuffle(ids);
       for (let i=0;i<ids.length;i+=2){
         games.push([ids[i], ids[i+1]]);
       }
     }
+
     schedule.push({ week:w, games });
   }
   return schedule;
+}
 
-  function shuffle(a){
-    for (let i=a.length-1;i>0;i--){
-      const j = Math.floor(Math.random()*(i+1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
+function shuffle(a){
+  for (let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i], a[j]] = [a[j], a[i]];
   }
 }
 
@@ -218,32 +252,46 @@ function simWeekGames(g){
   for (const [aId, bId] of bundle.games){
     const A = g.league.teams.find(t => t.id === aId);
     const B = g.league.teams.find(t => t.id === bId);
+    if (!A || !B) continue;
 
-    // win probability based on team rating + tiny randomness
-    const pA = clamp(0.5 + (A.rating - B.rating) * 0.015 + (Math.random()*0.06 - 0.03), 0.15, 0.85);
+    A.wins ??= 0; A.losses ??= 0;
+    B.wins ??= 0; B.losses ??= 0;
+
+    const pA = clamp(
+      0.5 + (A.rating - B.rating) * 0.015 + (Math.random()*0.06 - 0.03),
+      0.15,
+      0.85
+    );
+
     const aWin = Math.random() < pA;
 
-    if (aWin){ A.wins++; B.losses++; }
-    else { B.wins++; A.losses++; }
+    if (aWin){ A.wins += 1; B.losses += 1; }
+    else { B.wins += 1; A.losses += 1; }
 
-    // update player stats (very simple but feels alive)
     simTeamStats(A);
     simTeamStats(B);
 
-    // update happiness slightly based on result
     bumpHappiness(A, aWin ? +1 : -1);
     bumpHappiness(B, aWin ? -1 : +1);
   }
 }
 
 function simTeamStats(team){
-  const top = team.roster.slice().sort((a,b)=> b.ovr - a.ovr).slice(0, 9);
+  const roster = team.roster || [];
+  const top = roster.slice().sort((a,b)=> (b.ovr||0) - (a.ovr||0)).slice(0, 9);
+
   for (let i=0;i<top.length;i++){
     const p = top[i];
+    p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
+
     const usage = clamp(1.2 - i*0.08, 0.55, 1.2);
-    const pts = clamp((p.ovr - 55) * 0.35 * usage + (Math.random()*6), 0, 40);
-    const reb = clamp((p.pos==="C"||p.pos==="PF" ? 6 : 3) * usage + Math.random()*3, 0, 18);
-    const ast = clamp((p.pos==="PG" ? 6 : p.pos==="SG" ? 3.5 : 2.2) * usage + Math.random()*2, 0, 14);
+
+    const pts = clamp(((p.ovr || 70) - 55) * 0.35 * usage + (Math.random()*6), 0, 40);
+    const rebBase = (p.pos==="C"||p.pos==="PF") ? 6 : 3;
+    const reb = clamp(rebBase * usage + Math.random()*3, 0, 18);
+
+    const astBase = p.pos==="PG" ? 6 : p.pos==="SG" ? 3.5 : 2.2;
+    const ast = clamp(astBase * usage + Math.random()*2, 0, 14);
 
     p.stats.gp += 1;
     p.stats.pts += pts;
@@ -253,28 +301,45 @@ function simTeamStats(team){
 }
 
 function bumpHappiness(team, delta){
-  for (const p of team.roster){
+  for (const p of (team.roster || [])){
     p.happiness = clamp((p.happiness ?? 70) + delta, 0, 100);
   }
 }
 
-// per-game view helper: stored totals but UI shows per-game
-export function finalizePlayerAverages(){
+// -------------------- PLAYOFFS --------------------
+// Minimal, safe initializer so dashboard button works.
+// Your Playoffs screen can simulate rounds however you want.
+export function startPlayoffs(){
   const g = STATE.game;
-  for (const t of g.league.teams){
-    for (const p of t.roster){
-      const gp = Math.max(1, p.stats.gp || 1);
-      p.stats.pts = p.stats.pts / gp;
-      p.stats.reb = p.stats.reb / gp;
-      p.stats.ast = p.stats.ast / gp;
-    }
-  }
+  if (g.phase !== PHASES.REGULAR) return;
+
+  const east = getConferenceStandings(g, "EAST").slice(0, 8);
+  const west = getConferenceStandings(g, "WEST").slice(0, 8);
+
+  g.phase = PHASES.PLAYOFFS;
+
+  g.playoffs = {
+    startedAt: Date.now(),
+    round: 1,
+    bestOf: 7,
+    eastSeeds: east.map(t => t.id),
+    westSeeds: west.map(t => t.id),
+    // you can fill these out in your playoffs sim screen
+    championTeamId: null,
+    userFinish: null
+  };
+
+  g.inbox.unshift({ t: Date.now(), msg: "Playoffs started (Top 8 East/West)." });
 }
 
+function getConferenceStandings(g, conf){
+  return (g.league.teams || [])
+    .filter(t => t.conference === conf)
+    .slice()
+    .sort((a,b) => (b.wins - a.wins) || (a.losses - b.losses) || (b.rating - a.rating));
+}
 
-// ===== PLAYOFFS + OFFSEASON remain mostly same as your current East/West version =====
-// Keep your existing startPlayoffs and simPlayoffRound from earlier.
-
+// -------------------- FREE AGENCY --------------------
 export function startFreeAgency(){
   const g = STATE.game;
   g.phase = PHASES.FREE_AGENCY;
@@ -287,17 +352,21 @@ export function startFreeAgency(){
   g.inbox.unshift({ t: Date.now(), msg: "Free Agency started." });
 }
 
+// -------------------- DRAFT --------------------
 export function startDraft(){
   const g = STATE.game;
   g.phase = PHASES.DRAFT;
 
-  const order = [...g.league.teams].sort((a,b) => a.wins - b.wins);
+  // draft order: worst -> best record
+  const order = [...g.league.teams].sort((a,b) => (a.wins - b.wins) || (b.losses - a.losses));
 
+  // declared pool (you will hide ratings in UI unless scouted)
   const declared = [
     ...g.scouting.ncaa.filter(p => p.declared),
     ...g.scouting.intlPool.filter(p => p.declared)
   ];
 
+  // slight randomness in overall board, CPU logic should still be separate in draft.js
   declared.sort((a,b) => (b.currentOVR - a.currentOVR) + (Math.random() - 0.5));
 
   g.offseason.draft = {
@@ -312,6 +381,7 @@ export function startDraft(){
   g.inbox.unshift({ t: Date.now(), msg: "Draft started (2 rounds)." });
 }
 
+// -------------------- NEXT YEAR --------------------
 export function advanceToNextYear(){
   const g = STATE.game;
 
@@ -320,7 +390,7 @@ export function advanceToNextYear(){
   g.phase = PHASES.REGULAR;
 
   // reset hours
-  g.hours.available = 25;
+  g.hours.available = HOURS_PER_WEEK;
   g.hours.banked = 0;
 
   // reset scouting pools
@@ -331,13 +401,16 @@ export function advanceToNextYear(){
   g.scouting.intlFoundWeekById = {};
   g.scouting.intlLocation = null;
 
-  // reset league records + schedule
+  // reset league records + schedule + player stats
   for (const t of g.league.teams){
     t.wins = 0;
     t.losses = 0;
-    // keep rosters in place for now (later: contracts expire, etc.)
+    for (const p of (t.roster || [])){
+      p.stats = { gp:0, pts:0, reb:0, ast:0 };
+    }
   }
-  g.schedule = generateWeeklySchedule(g.league.teams.map(t => t.id), SEASON_WEEKS, 4);
+
+  g.schedule = generateWeeklySchedule(g.league.teams.map(t => t.id), SEASON_WEEKS);
 
   g.playoffs = null;
   g.offseason.freeAgents = null;
@@ -345,11 +418,10 @@ export function advanceToNextYear(){
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
 }
-// ===================== HISTORY + AWARDS =====================
 
+// -------------------- HISTORY + AWARDS --------------------
 export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
   const g = STATE.game;
-
   g.history ??= [];
 
   const userTeam = g.league.teams[g.userTeamIndex];
@@ -365,7 +437,7 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
     awards
   });
 
-  g.inbox.unshift({ t: Date.now(), msg: `Season ${g.year} awards announced and saved to History.` });
+  g.inbox.unshift({ t: Date.now(), msg: `Season ${g.year} awards saved to History.` });
 }
 
 function computeAwards(g){
@@ -373,38 +445,26 @@ function computeAwards(g){
   for (const t of g.league.teams){
     for (const p of (t.roster || [])){
       const gp = p.stats?.gp || 0;
+      if (gp <= 0) continue;
 
-      // Your sim stores totals (pts/reb/ast), so convert to per-game for awards
-      const ptsPg = gp ? (p.stats.pts / gp) : 0;
-      const rebPg = gp ? (p.stats.reb / gp) : 0;
-      const astPg = gp ? (p.stats.ast / gp) : 0;
+      const ptsPg = (p.stats.pts / gp);
+      const rebPg = (p.stats.reb / gp);
+      const astPg = (p.stats.ast / gp);
 
-      all.push({
-        team: t,
-        player: p,
-        gp,
-        ptsPg,
-        rebPg,
-        astPg
-      });
+      all.push({ team: t, player: p, gp, ptsPg, rebPg, astPg });
     }
   }
 
-  // avoid tiny sample sizes
   const played = all.filter(x => x.gp >= 8);
 
-  // Offensive POY: scoring + some playmaking
   const opoy = topBy(played, x => x.ptsPg * 1.0 + x.astPg * 0.45);
 
-  // MVP: offense + team success + OVR
   const mvp = topBy(played, x => {
-    const winsBoost = x.team.wins * 0.10; // tuned for 20-week season
+    const winsBoost = (x.team.wins || 0) * 0.10;
     const ovrBoost = (x.player.ovr || 70) * 0.25;
     return x.ptsPg * 1.15 + x.astPg * 0.65 + winsBoost + ovrBoost;
   });
 
-  // Defensive POY: v1 approximation (until steals/blocks exist)
-  // favors bigs + higher OVR + stronger teams
   const dpoy = topBy(played, x => {
     const pos = x.player.pos || "";
     const bigBonus = (pos === "C" ? 14 : pos === "PF" ? 9 : pos === "SF" ? 3 : 0);
@@ -413,7 +473,6 @@ function computeAwards(g){
     return bigBonus + ovr * 1.0 + teamDefProxy;
   });
 
-  // Rookie of the Year: rookies only (rookieYear set in draft.js)
   const rookies = played.filter(x => x.player.rookieYear === g.year);
   const roy = rookies.length
     ? topBy(rookies, x => x.ptsPg * 1.0 + x.astPg * 0.45 + (x.player.ovr || 70) * 0.2)
@@ -446,4 +505,3 @@ function topBy(arr, scoreFn){
   }
   return best;
 }
-
