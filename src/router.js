@@ -7,17 +7,19 @@ import { DraftScreen } from "./ui/screens/draft.js";
 import { TeamScreen } from "./ui/screens/team.js";
 import { StandingsScreen } from "./ui/screens/standings.js";
 import { HistoryScreen } from "./ui/screens/history.js";
+import { TradeScreen } from "./ui/screens/trade.js"; // <--- ADD IMPORT
 
 export const router = {
-  "/": () => HomeScreen(),               // <-- FIXED: Matches import name
-  "/dashboard": () => DashboardScreen(), // <-- FIXED: Matches import name
-  "/scouting": () => ScoutingScreen(),   // <-- FIXED: Matches import name
+  "/": () => HomeScreen(),
+  "/dashboard": () => DashboardScreen(),
+  "/scouting": () => ScoutingScreen(),
   "/free-agency": () => FreeAgencyScreen(),
   "/draft": () => DraftScreen(),
   "/playoffs": () => PlayoffsScreen(),
-  "/team": () => TeamScreen(),           // <-- ADDED
-  "/standings": () => StandingsScreen(), // <-- ADDED
-  "/history": () => HistoryScreen()      // <-- ADDED
+  "/team": () => TeamScreen(),
+  "/standings": () => StandingsScreen(),
+  "/history": () => HistoryScreen(),
+  "/trade": () => TradeScreen(),         // <--- ADD ROUTE
 };
 
 export function mountRouter(appEl, routesMap){
