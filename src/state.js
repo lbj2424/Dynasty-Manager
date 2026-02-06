@@ -9,161 +9,7 @@ import {
   PHASES,
   SALARY_CAP
 } from "./data/constants.js";
-// ... existing imports
-import { clamp } from "./utils.js"; 
-
-// 1. UPDATE newGameState to initialize rotation minutes
-export function newGameState({ userTeamIndex=0 } = {}){
-  const year = 1;
-  const league = generateLeague({ seed: "v1_seed" });
-
-  // Ensure wins/losses/assets exist
-  for (const t of league.teams){
-    t.wins ??= 0; t.losses ??= 0;
-    t.assets = { picks: generateFuturePicks(t.id, year) };
-    t.roster = generateTeamRoster({ teamName: t.name, teamRating: t.rating, year }) || [];
-    t.cap ??= { cap: SALARY_CAP, payroll: 0 };
-    t.cap.cap ??= SALARY_CAP; // Ensure cap is set
-
-    // SETUP ROTATION
-    // Auto-distribute ~205 minutes based on OVR
-    const totalMinutes = 205; // 5 * 41
-    t.roster.sort((a,b) => b.ovr - a.ovr);
-    
-    // Simple distribution: Top 5 get 30m, next 5 get 11m, rest 0?
-    // Let's do a weighted spread for realism
-    let assigned = 0;
-    for (let i=0; i<t.roster.length; i++){
-        const p = t.roster[i];
-        p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
-        p.happiness ??= 70;
-        
-        // Initialize Rotation Object
-        let mins = 0;
-        if (i < 5) mins = 32;        // Starters
-        else if (i < 10) mins = 9;   // Bench
-        else mins = 0;               // Reserves
-        
-        p.rotation = {
-            minutes: mins,
-            isStarter: i < 5
-        };
-        assigned += mins;
-    }
-    // Fix rounding errors to hit exactly 205
-    if (t.roster.length > 0) {
-        t.roster[0].rotation.minutes += (205 - assigned);
-    }
-
-    recalcPayroll(t);
-  }
-
-  const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
-
-  return {
-    meta: { version: "0.3.3", createdAt: Date.now() }, // Bump version
-    activeSaveSlot: null,
-    game: {
-      year,
-      phase: PHASES.REGULAR,
-      week: 1,
-      seasonWeeks: SEASON_WEEKS,
-      schedule,
-      hours: { available: HOURS_PER_WEEK, banked: 0, bankMax: HOURS_BANK_MAX },
-      league,
-      userTeamIndex,
-      scouting: {
-        tab: "NCAA",
-        ncaa: generateNCAAProspects({ year, count: 100, seed: "ncaa" }),
-        intlPool: generateInternationalPool({ year, count: 100, seed: "intl" }),
-        scoutedNCAAIds: [], scoutedIntlIds: [], intlFoundWeekById: {}, intlLocation: null
-      },
-      playoffs: null,
-      offseason: { freeAgents: null, draft: null },
-      inbox: [],
-      history: []
-    }
-  };
-}
-
-// 2. NEW FUNCTION: Release Player
-export function releasePlayer(teamId, playerId){
-    const g = STATE.game;
-    const team = g.league.teams.find(t => t.id === teamId);
-    if (!team) return;
-
-    // Remove from roster
-    const idx = team.roster.findIndex(p => p.id === playerId);
-    if (idx === -1) return;
-
-    // Logic: In a real league, you pay a penalty. 
-    // Here, per request: "Get that cap space back" (Full relief).
-    team.roster.splice(idx, 1);
-    
-    // Recalculate Payroll
-    recalcPayroll(team);
-    
-    // Note: If you cut a player, their minutes are gone.
-    // You might want to auto-rebalance logic here, 
-    // or just let the Depth Chart warn the user they are under 205 mins.
-}
-
-// 3. UPDATE simTeamStats to use Minutes
-function simTeamStats(team){
-  const roster = team.roster || [];
-  
-  // Use assigned minutes directly
-  for (const p of roster){
-    p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
-    p.rotation ??= { minutes: 0, isStarter: false }; // Safety
-
-    const mins = p.rotation.minutes;
-    
-    // If minutes are 0, they don't play
-    if (mins <= 0) continue;
-
-    // Usage Factor: 28 minutes is roughly "1.0" standard usage scaling
-    const usage = mins / 28.0; 
-
-    // Random Variance (some games good, some bad)
-    const gameVar = 0.8 + Math.random() * 0.4;
-
-    // Calculate Stats
-    // Points: Driven by OVR + Usage + Variance
-    // Base: (OVR - 55). 75 OVR = 20 base. * Usage(1.0) = 20ppg.
-    const ptsBase = Math.max(0, (p.ovr - 50));
-    const pts = clamp(ptsBase * 0.6 * usage * gameVar, 0, 60);
-
-    // Rebounds
-    const rebBase = (p.pos==="C"||p.pos==="PF") ? 0.35 : 0.12; 
-    const reb = clamp(ptsBase * rebBase * usage * gameVar * 1.5, 0, 25);
-
-    // Assists
-    const astBase = p.pos==="PG" ? 0.4 : p.pos==="SG" ? 0.2 : 0.1;
-    const ast = clamp(ptsBase * astBase * usage * gameVar * 1.5, 0, 20);
-
-    p.stats.gp += 1;
-    p.stats.pts += pts;
-    p.stats.reb += reb;
-    p.stats.ast += ast;
-  }
-}
-
-// Helper (ensure this is in your file)
-function recalcPayroll(team){
-    team.cap.payroll = Number(team.roster.reduce((sum,p)=> sum + (p.contract?.salary || 0), 0).toFixed(1));
-}
-
-// Ensure generateFuturePicks is available if you didn't paste it from previous turn:
-function generateFuturePicks(teamId, startYear){
-  const picks = [];
-  for (let y = startYear; y < startYear + 4; y++){
-    picks.push({ id: `pick_${teamId}_${y}_1`, originalOwnerId: teamId, year: y, round: 1 });
-    picks.push({ id: `pick_${teamId}_${y}_2`, originalOwnerId: teamId, year: y, round: 2 });
-  }
-  return picks;
-}
-
+import { clamp, id } from "./utils.js";
 
 const KEY_ACTIVE = "dynasty_active_slot";
 const KEY_SAVE_PREFIX = "dynasty_save_";
@@ -171,6 +17,8 @@ const KEY_SAVE_PREFIX = "dynasty_save_";
 let STATE = null;
 
 export function getState(){ return STATE; }
+
+// -------------------- INITIALIZATION & MIGRATION --------------------
 
 export function ensureAppState(loadedOrNull){
   if (loadedOrNull){
@@ -206,7 +54,6 @@ export function ensureAppState(loadedOrNull){
       });
 
       // If this is an old save with no minutes assigned, Auto-Distribute them now
-      // otherwise the team will score 0 points in simulation.
       if (needsRotationFix) {
           autoDistributeMinutes(t);
       }
@@ -219,66 +66,29 @@ export function ensureAppState(loadedOrNull){
   STATE = newGameState({ userTeamIndex: 0 });
 }
 
-// --- Helper for Migration ---
-function autoDistributeMinutes(team){
-    const sorted = team.roster.sort((a,b) => b.ovr - a.ovr);
-    let remain = 205;
-
-    // Reset
-    sorted.forEach(p => { p.rotation.minutes = 0; p.rotation.isStarter = false; });
-
-    // Top 5
-    for(let i=0; i<Math.min(5, sorted.length); i++){
-        sorted[i].rotation.isStarter = true;
-        const give = 33; 
-        sorted[i].rotation.minutes = give;
-        remain -= give;
-    }
-    // Next 5
-    for(let i=5; i<Math.min(10, sorted.length); i++){
-        const give = 8;
-        sorted[i].rotation.minutes = give;
-        remain -= give;
-    }
-    // Remainder to best player
-    if (sorted.length > 0) sorted[0].rotation.minutes += remain;
-}
-
-// -------------------- NEW GAME --------------------
 export function newGameState({ userTeamIndex=0 } = {}){
   const year = 1;
   const league = generateLeague({ seed: "v1_seed" });
 
-  // Ensure wins/losses exist (CRITICAL)
+  // Ensure wins/losses/assets exist
   for (const t of league.teams){
-    t.wins ??= 0;
-    t.losses ??= 0;
-    t.roster ??= [];
-    t.cap ??= { cap: SALARY_CAP, payroll: 0 };
-    t.cap.cap ??= SALARY_CAP;
-    t.cap.payroll ??= 0;
-    // Give every team 4 years of picks
+    t.wins ??= 0; t.losses ??= 0;
     t.assets = { picks: generateFuturePicks(t.id, year) };
-  }
-
-  // Build rosters for ALL teams + ensure safe player fields
-  for (const t of league.teams){
     t.roster = generateTeamRoster({ teamName: t.name, teamRating: t.rating, year }) || [];
+    t.cap ??= { cap: SALARY_CAP, payroll: 0 };
+    t.cap.cap ??= SALARY_CAP; // Ensure cap is set
 
-    for (const p of t.roster){
-      p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
-      p.happiness ??= 70;
-      p.energy ??= 100;
-      p.dev ??= p.dev || { focus: "Balanced", points: 7 };
-    }
-    
+    // SETUP ROTATION
+    // Auto-distribute ~205 minutes based on OVR
+    autoDistributeMinutes(t);
+
     recalcPayroll(t);
   }
 
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.3.2", createdAt: Date.now() },
+    meta: { version: "0.3.3", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -286,21 +96,14 @@ export function newGameState({ userTeamIndex=0 } = {}){
       week: 1,
       seasonWeeks: SEASON_WEEKS,
       schedule,
-      hours: {
-        available: HOURS_PER_WEEK,
-        banked: 0,
-        bankMax: HOURS_BANK_MAX
-      },
+      hours: { available: HOURS_PER_WEEK, banked: 0, bankMax: HOURS_BANK_MAX },
       league,
       userTeamIndex,
       scouting: {
         tab: "NCAA",
         ncaa: generateNCAAProspects({ year, count: 100, seed: "ncaa" }),
         intlPool: generateInternationalPool({ year, count: 100, seed: "intl" }),
-        scoutedNCAAIds: [],
-        scoutedIntlIds: [],
-        intlFoundWeekById: {},
-        intlLocation: null
+        scoutedNCAAIds: [], scoutedIntlIds: [], intlFoundWeekById: {}, intlLocation: null
       },
       playoffs: null,
       offseason: { freeAgents: null, draft: null },
@@ -310,9 +113,36 @@ export function newGameState({ userTeamIndex=0 } = {}){
   };
 }
 
+// -------------------- HELPER FUNCTIONS --------------------
+
+function autoDistributeMinutes(team){
+    const sorted = (team.roster || []).sort((a,b) => b.ovr - a.ovr);
+    let remain = 205; // 5 players * 41 mins
+
+    // Reset
+    sorted.forEach(p => { 
+        p.rotation = { minutes: 0, isStarter: false }; 
+    });
+
+    // Top 5 (Starters)
+    for(let i=0; i<Math.min(5, sorted.length); i++){
+        sorted[i].rotation.isStarter = true;
+        const give = 33; 
+        sorted[i].rotation.minutes = give;
+        remain -= give;
+    }
+    // Next 5 (Bench)
+    for(let i=5; i<Math.min(10, sorted.length); i++){
+        const give = 8;
+        sorted[i].rotation.minutes = give;
+        remain -= give;
+    }
+    // Remainder to best player
+    if (sorted.length > 0) sorted[0].rotation.minutes += remain;
+}
+
 function generateFuturePicks(teamId, startYear){
   const picks = [];
-  // Generate picks for current year + next 3 (4 years total)
   for (let y = startYear; y < startYear + 4; y++){
     picks.push({ id: `pick_${teamId}_${y}_1`, originalOwnerId: teamId, year: y, round: 1 });
     picks.push({ id: `pick_${teamId}_${y}_2`, originalOwnerId: teamId, year: y, round: 2 });
@@ -324,7 +154,7 @@ function recalcPayroll(team){
     team.cap.payroll = Number(team.roster.reduce((sum,p)=> sum + (p.contract?.salary || 0), 0).toFixed(1));
 }
 
-// -------------------- TRADE LOGIC --------------------
+// -------------------- TRADE & ROSTER LOGIC --------------------
 
 export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
     const g = STATE.game;
@@ -356,10 +186,28 @@ export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
     recalcPayroll(userTeam);
     recalcPayroll(otherTeam);
 
+    // Auto-fix rotation if roster size changed drastically (optional but safe)
+    autoDistributeMinutes(userTeam);
+    autoDistributeMinutes(otherTeam);
+
     return true;
 }
 
-// -------------------- SAVES (Keep existing) --------------------
+export function releasePlayer(teamId, playerId){
+    const g = STATE.game;
+    const team = g.league.teams.find(t => t.id === teamId);
+    if (!team) return;
+
+    // Remove from roster
+    const idx = team.roster.findIndex(p => p.id === playerId);
+    if (idx === -1) return;
+
+    team.roster.splice(idx, 1);
+    recalcPayroll(team);
+}
+
+// -------------------- SAVES --------------------
+
 export function setActiveSaveSlot(slot){
   STATE.activeSaveSlot = slot;
   localStorage.setItem(KEY_ACTIVE, slot);
@@ -398,7 +246,8 @@ export function deleteSlot(slot){
   if (active === slot) localStorage.removeItem(KEY_ACTIVE);
 }
 
-// -------------------- HOURS (Keep existing) --------------------
+// -------------------- HOURS & TIME --------------------
+
 export function spendHours(n){
   const h = STATE.game.hours;
   let need = n;
@@ -415,7 +264,6 @@ export function spendHours(n){
   return need === 0;
 }
 
-// -------------------- REGULAR SEASON (Keep existing) --------------------
 export function advanceWeek(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
@@ -449,6 +297,8 @@ function expireIntlFoundProspects(g){
   g.scouting.intlPool = keep;
   g.scouting.intlFoundWeekById = found;
 }
+
+// -------------------- SIMULATION --------------------
 
 function generateWeeklySchedule(teamIds, weeks){
   const schedule = [];
@@ -505,16 +355,33 @@ function simWeekGames(g){
 
 function simTeamStats(team){
   const roster = team.roster || [];
-  const top = roster.slice().sort((a,b)=> (b.ovr||0) - (a.ovr||0)).slice(0, 9);
-  for (let i=0;i<top.length;i++){
-    const p = top[i];
+  
+  // Use assigned minutes directly
+  for (const p of roster){
     p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
-    const usage = clamp(1.2 - i*0.08, 0.55, 1.2);
-    const pts = clamp(((p.ovr || 70) - 55) * 0.35 * usage + (Math.random()*6), 0, 40);
-    const rebBase = (p.pos==="C"||p.pos==="PF") ? 6 : 3;
-    const reb = clamp(rebBase * usage + Math.random()*3, 0, 18);
-    const astBase = p.pos==="PG" ? 6 : p.pos==="SG" ? 3.5 : 2.2;
-    const ast = clamp(astBase * usage + Math.random()*2, 0, 14);
+    p.rotation ??= { minutes: 0, isStarter: false }; // Safety
+
+    const mins = p.rotation.minutes;
+    
+    // If minutes are 0, they don't play
+    if (mins <= 0) continue;
+
+    // Usage Factor: 28 minutes is roughly "1.0" standard usage scaling
+    const usage = mins / 28.0; 
+
+    // Random Variance (some games good, some bad)
+    const gameVar = 0.8 + Math.random() * 0.4;
+
+    // Calculate Stats
+    const ptsBase = Math.max(0, (p.ovr - 50));
+    const pts = clamp(ptsBase * 0.6 * usage * gameVar, 0, 60);
+
+    const rebBase = (p.pos==="C"||p.pos==="PF") ? 0.35 : 0.12; 
+    const reb = clamp(ptsBase * rebBase * usage * gameVar * 1.5, 0, 25);
+
+    const astBase = p.pos==="PG" ? 0.4 : p.pos==="SG" ? 0.2 : 0.1;
+    const ast = clamp(ptsBase * astBase * usage * gameVar * 1.5, 0, 20);
+
     p.stats.gp += 1;
     p.stats.pts += pts;
     p.stats.reb += reb;
@@ -528,7 +395,8 @@ function bumpHappiness(team, delta){
   }
 }
 
-// -------------------- PLAYOFFS (Updated) --------------------
+// -------------------- PLAYOFFS --------------------
+
 export function startPlayoffs(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
@@ -624,7 +492,8 @@ function getConferenceStandings(g, conf){
     .sort((a,b) => (b.wins - a.wins) || (a.losses - b.losses) || (b.rating - a.rating));
 }
 
-// -------------------- FREE AGENCY (Keep existing) --------------------
+// -------------------- FREE AGENCY & DRAFT --------------------
+
 export function startFreeAgency(){
   const g = STATE.game;
   g.phase = PHASES.FREE_AGENCY;
@@ -635,22 +504,19 @@ export function startFreeAgency(){
   g.inbox.unshift({ t: Date.now(), msg: "Free Agency started." });
 }
 
-// -------------------- DRAFT (Updated for Traded Picks) --------------------
 export function startDraft(){
   const g = STATE.game;
   g.phase = PHASES.DRAFT;
 
   // 1. Determine "Natural" Draft Order (worst record -> best)
-  // This tells us: "Slot #1 originally belongs to Team X"
   const naturalOrderTeams = [...g.league.teams].sort((a,b) => (a.wins - b.wins) || (b.losses - a.losses));
   
-  // 2. Build the actual draft order by checking who owns the pick for that slot
+  // 2. Build the actual draft order by checking who owns the pick
   const finalOrderIds = [];
-  const rounds = 2; // Fixed as per request
+  const rounds = 2; 
   
   for (let r = 1; r <= rounds; r++) {
     for (const originalTeam of naturalOrderTeams) {
-        // Find who has originalTeam's pick for this year and round
         const owner = findPickOwner(g, originalTeam.id, g.year, r);
         finalOrderIds.push(owner ? owner.id : originalTeam.id);
     }
@@ -666,7 +532,7 @@ export function startDraft(){
   g.offseason.draft = {
     round: 1,
     pickIndex: 0,
-    orderTeamIds: finalOrderIds, // Now contains 64 IDs (32 for R1, 32 for R2)
+    orderTeamIds: finalOrderIds,
     declaredProspects: declared,
     drafted: [],
     done: false
@@ -675,9 +541,7 @@ export function startDraft(){
   g.inbox.unshift({ t: Date.now(), msg: "Draft started (2 rounds)." });
 }
 
-// Helper to find who currently owns a specific pick
 function findPickOwner(g, originalOwnerId, year, round){
-    // Search all teams to find who holds this specific pick asset
     for (const t of g.league.teams) {
         if (!t.assets || !t.assets.picks) continue;
         const found = t.assets.picks.find(p => 
@@ -687,11 +551,11 @@ function findPickOwner(g, originalOwnerId, year, round){
         );
         if (found) return t;
     }
-    // If not found in assets (maybe consumed?), fallback to original owner (shouldn't happen if logic is tight)
     return g.league.teams.find(t => t.id === originalOwnerId);
 }
 
-// -------------------- NEXT YEAR (Updated) --------------------
+// -------------------- NEXT YEAR & HISTORY --------------------
+
 export function advanceToNextYear(){
   const g = STATE.game;
   g.year += 1;
@@ -708,10 +572,10 @@ export function advanceToNextYear(){
   g.scouting.intlFoundWeekById = {};
   g.scouting.intlLocation = null;
 
-  // Add new future picks (Year + 4) so they always have 4 years of picks
+  // Add new future picks (Year + 4)
   for (const t of g.league.teams){
     if (!t.assets) t.assets = { picks: [] };
-    const newYear = g.year + 3; // e.g. if now Year 2, we have Y2, Y3, Y4. Add Y5.
+    const newYear = g.year + 3;
     t.assets.picks.push({ id: `pick_${t.id}_${newYear}_1`, originalOwnerId: t.id, year: newYear, round: 1 });
     t.assets.picks.push({ id: `pick_${t.id}_${newYear}_2`, originalOwnerId: t.id, year: newYear, round: 2 });
   }
@@ -732,7 +596,6 @@ export function advanceToNextYear(){
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
 }
 
-// -------------------- HISTORY (Keep existing) --------------------
 export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
   const g = STATE.game;
   g.history ??= [];
