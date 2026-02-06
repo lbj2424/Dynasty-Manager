@@ -50,16 +50,19 @@ export function DashboardScreen(){
     topButtons.push(button("Go to Draft", { primary:true, onClick: () => location.hash = "#/draft" }));
   }
 
-  topButtons.push(
-    button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }),
-    button("Save", {
-      onClick: () => {
-        const slot = getActiveSaveSlot() || "A";
-        saveToSlot(slot);
-        alert(`Saved to Slot ${slot}`);
-      }
-    })
-  );
+ topButtons.push(
+  button("My Team", { onClick: () => location.hash = "#/team" }),
+  button("Standings", { onClick: () => location.hash = "#/standings" }),
+  button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }),
+  button("Save", {
+    onClick: () => {
+      const slot = getActiveSaveSlot() || "A";
+      saveToSlot(slot);
+      alert(`Saved to Slot ${slot}`);
+    }
+  })
+);
+
 
   root.appendChild(card("Dashboard", "Regular season → Playoffs → Free Agency → Draft.", [
     el("div", { class:"row" }, [
