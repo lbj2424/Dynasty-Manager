@@ -1,7 +1,7 @@
 import { generateLeague } from "./gen/league.js";
 import { generateNCAAProspects, generateInternationalPool } from "./gen/prospects.js";
 import { generateFreeAgents } from "./gen/freeAgents.js";
-import { generateTeamRoster } from "./gen/players.js";
+import { generateTeamRoster, calculateSalary } from "./gen/players.js"; // Import calculateSalary
 import {
   HOURS_BANK_MAX,
   HOURS_PER_WEEK,
@@ -89,7 +89,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.3.6", createdAt: Date.now() },
+    meta: { version: "0.3.7", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -107,7 +107,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
         scoutedNCAAIds: [], scoutedIntlIds: [], intlFoundWeekById: {}, intlLocation: null
       },
       playoffs: null,
-      offseason: { freeAgents: null, draft: null },
+      offseason: { freeAgents: null, draft: null, expiring: [] }, // Added expiring array
       inbox: [],
       history: []
     }
@@ -118,6 +118,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
 
 function processEndSeasonRoster(g){
   const userTeamId = g.league.teams[g.userTeamIndex].id;
+  g.offseason.expiring = []; // Reset expiring list
 
   for(const t of g.league.teams){
     const nextRoster = [];
@@ -127,13 +128,11 @@ function processEndSeasonRoster(g){
       p.age = (p.age || 20) + 1;
 
       // 2. DEVELOPMENT / REGRESSION
-      // Simple logic: Young grow, Old decline
       let change = 0;
-      if (p.age <= 23) change = Math.floor(Math.random() * 3) + 1; // +1 to +3
-      else if (p.age <= 27) change = Math.floor(Math.random() * 3) - 1; // -1 to +1
-      else if (p.age >= 30) change = Math.floor(Math.random() * 3) * -1; // 0 to -2
+      if (p.age <= 23) change = Math.floor(Math.random() * 3) + 1; 
+      else if (p.age <= 27) change = Math.floor(Math.random() * 3) - 1; 
+      else if (p.age >= 30) change = Math.floor(Math.random() * 3) * -1; 
       
-      // Apply Potential Cap
       if (p.potentialGrade === "A" || p.potentialGrade === "A+") change += 1;
       if (p.potentialGrade === "F") change -= 1;
 
@@ -146,16 +145,38 @@ function processEndSeasonRoster(g){
       if(p.contract.years > 0){
         nextRoster.push(p);
       } else {
-        // Player leaves (Contract Expired)
+        // Player Contract Expired -> Move to Expiring List
         if(t.id === userTeamId){
-           g.inbox.unshift({ t:Date.now(), msg:`${p.name}'s contract expired. They have left the team.` });
+           g.inbox.unshift({ t:Date.now(), msg:`${p.name}'s contract expired. They entered Free Agency.` });
         }
+        
+        // Prepare player for Free Agency
+        const fairValue = calculateSalary(p.ovr, p.age);
+        const greed = 0.9 + Math.random() * 0.3; // 0.9x to 1.2x greed
+        
+        const faObj = {
+            id: p.id,
+            name: p.name,
+            pos: p.pos,
+            ovr: p.ovr,
+            age: p.age,
+            potentialGrade: p.potentialGrade,
+            ask: Number((fairValue * greed).toFixed(2)),
+            yearsAsk: Math.max(1, Math.min(4, Math.floor(Math.random() * 4) + 1)),
+            wantsWinning: Math.random() > 0.5,
+            wantsRole: Math.random() > 0.5,
+            signedByTeamId: null,
+            promisedRole: null,
+            contract: null,
+            offers: []
+        };
+        g.offseason.expiring.push(faObj);
       }
     }
     
     t.roster = nextRoster;
     recalcPayroll(t);
-    autoDistributeMinutes(t); // Fix rotation after players leave
+    autoDistributeMinutes(t);
   }
 }
 
@@ -463,8 +484,7 @@ export function simPlayoffRound(){
       if (p.round === 4) {
           p.championTeamId = allSeries[0].winner;
           finalizeSeasonAndLogHistory({ championTeamId: p.championTeamId, userPlayoffFinish: "Playoffs" });
-          startFreeAgency(); // Calls processEndSeasonRoster indirectly if we hook it here? 
-          // Actually, finalizeSeasonAndLogHistory calls processEndSeasonRoster now.
+          startFreeAgency();
       } else {
           p.round++;
           generateNextRoundMatchups(g);
@@ -517,11 +537,24 @@ function getConferenceStandings(g, conf){
 export function startFreeAgency(){
   const g = STATE.game;
   g.phase = PHASES.FREE_AGENCY;
+  
+  // 1. Generate random fresh free agents
+  const freshPool = generateFreeAgents({ year: g.year, count: 80, seed: "fa" });
+  
+  // 2. Retrieve the expiring players we saved during season processing
+  const expiringPool = g.offseason.expiring || [];
+  
+  // 3. Combine them
+  const combinedPool = [...expiringPool, ...freshPool];
+  
+  // Sort by OVR
+  combinedPool.sort((a,b) => b.ovr - a.ovr);
+
   g.offseason.freeAgents = {
     cap: SALARY_CAP,
-    pool: generateFreeAgents({ year: g.year, count: 80, seed: "fa" })
+    pool: combinedPool
   };
-  g.inbox.unshift({ t: Date.now(), msg: "Free Agency started." });
+  g.inbox.unshift({ t: Date.now(), msg: `Free Agency started. ${expiringPool.length} players joined from expired contracts.` });
 }
 
 export function startDraft(){
@@ -606,6 +639,7 @@ export function advanceToNextYear(){
   g.playoffs = null;
   g.offseason.freeAgents = null;
   g.offseason.draft = null;
+  g.offseason.expiring = []; // Clear old expiring list
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
 }
@@ -613,9 +647,9 @@ export function advanceToNextYear(){
 export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
   const g = STATE.game;
   
-  // --- NEW: PROCESS ROSTER UPDATES (Age up, Contracts down) ---
+  // --- PROCESS ROSTER UPDATES (Age up, Contracts down, Collect Expiring) ---
   processEndSeasonRoster(g);
-  // ------------------------------------------------------------
+  // -------------------------------------------------------------------------
 
   g.history ??= [];
   const userTeam = g.league.teams[g.userTeamIndex];
