@@ -9,17 +9,13 @@ import { StandingsScreen } from "./ui/screens/standings.js";
 import { HistoryScreen } from "./ui/screens/history.js";
 
 
-export const routes = {
-  "/": HomeScreen,
-  "/dashboard": DashboardScreen,
-  "/team": TeamScreen,
-  "/standings": StandingsScreen,
-  "/scouting": ScoutingScreen,
-  "/playoffs": PlayoffsScreen,
-  "/free-agency": FreeAgencyScreen,
-  "/draft": DraftScreen
-  "/history": HistoryScreen,
-
+export const router = {
+  "/": () => Home(),
+  "/dashboard": () => Dashboard(),
+  "/scouting": () => Scouting(),
+  "/free-agency": () => FreeAgency(),  // <-- 🚀 fixed
+  "/draft": () => Draft(),
+  "/playoffs": () => Playoffs(),
 };
 
 export function mountRouter(appEl, routesMap){
