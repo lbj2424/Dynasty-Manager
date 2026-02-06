@@ -1,12 +1,12 @@
 import { el, card, button, badge } from "../components.js";
-import { getState } from "../../state.js";
+import { getState, saveToSlot, getActiveSaveSlot } from "../../state.js";
 
 export function DepthChartScreen(){
   const s = getState();
   const g = s.game;
   const team = g.league.teams[g.userTeamIndex];
 
-  // Ensure everyone has rotation object
+  // Ensure everyone has rotation object (just in case)
   team.roster.forEach(p => {
       p.rotation ??= { minutes: 0, isStarter: false };
   });
@@ -16,21 +16,36 @@ export function DepthChartScreen(){
   // Calculation
   const totalMins = team.roster.reduce((sum, p) => sum + (p.rotation.minutes || 0), 0);
   const MAX_MINS = 205; // 5 * 41
+  
+  // Count starters
+  const starterCount = team.roster.filter(p => p.rotation.isStarter).length;
 
   const statusColor = totalMins === MAX_MINS ? "var(--good)" : totalMins > MAX_MINS ? "var(--bad)" : "var(--warn)";
+  const starterColor = starterCount === 5 ? "var(--good)" : "var(--bad)";
   
   root.appendChild(card("Depth Chart", "Game is 41 minutes long. Total minutes available: 205.", [
       el("div", { class:"row" }, [
           badge(`Roster: ${team.roster.length}`),
-          el("span", { class:"badge", style:`color:${statusColor}; border-color:${statusColor}` }, `Allocated: ${totalMins} / ${MAX_MINS}`)
+          el("span", { class:"badge", style:`color:${statusColor}; border-color:${statusColor}` }, `Allocated: ${totalMins} / ${MAX_MINS}`),
+          el("span", { class:"badge", style:`color:${starterColor}; border-color:${starterColor}` }, `Starters: ${starterCount} / 5`)
       ]),
       el("div", { class:"sep" }),
-      button("Auto-Distribute", {
-          onClick: () => {
-              autoDistribute(team);
-              rerender(root);
-          }
-      })
+      el("div", { class:"row" }, [
+        button("Auto-Distribute", {
+            onClick: () => {
+                autoDistribute(team);
+                rerender(root);
+            }
+        }),
+        button("Save Changes", {
+            primary: true,
+            onClick: () => {
+                const slot = getActiveSaveSlot() || "A";
+                saveToSlot(slot);
+                alert(`Rotation saved to Slot ${slot}.`);
+            }
+        })
+      ])
   ]));
 
   // Roster List with Inputs
@@ -54,7 +69,18 @@ export function DepthChartScreen(){
 
       const startCheck = el("input", { type:"checkbox", checked: p.rotation.isStarter });
       startCheck.onchange = (e) => {
-          p.rotation.isStarter = e.target.checked;
+          const isChecking = e.target.checked;
+          const currentStarters = team.roster.filter(x => x.rotation.isStarter).length;
+
+          // Enforce 5 starters limit
+          if (isChecking && currentStarters >= 5) {
+              e.target.checked = false; // Undo the check
+              alert("You can only have 5 starters. Uncheck someone else first.");
+              return;
+          }
+          
+          p.rotation.isStarter = isChecking;
+          rerender(root); // Re-render to update the starter count badge
       };
 
       return el("tr", {}, [
@@ -70,7 +96,7 @@ export function DepthChartScreen(){
       ]);
   });
 
-  root.appendChild(card("Rotation", "Check box for 'Starter' (visual only). Minutes determine stats.", [
+  root.appendChild(card("Rotation", "Check box for 'Starter' (Limit 5). Minutes determine stats.", [
       el("table", { class:"table" }, [
           el("thead", {}, el("tr", {}, [
               el("th", {}, "Player"),
