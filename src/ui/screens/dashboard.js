@@ -1,6 +1,13 @@
 import { el, card, button, badge } from "../components.js";
-import { getState, advanceWeek, saveToSlot, getActiveSaveSlot } from "../../state.js";
+import {
+  getState,
+  advanceWeek,
+  saveToSlot,
+  getActiveSaveSlot,
+  startPlayoffs
+} from "../../state.js";
 import { formatWeek } from "../../utils.js";
+import { PHASES } from "../../data/constants.js";
 
 export function DashboardScreen(){
   const s = getState();
@@ -8,51 +15,74 @@ export function DashboardScreen(){
 
   const root = el("div", {}, []);
 
-  root.appendChild(card("Dashboard", "Your franchise at a glance.", [
-    el("div", { class:"row" }, [
-      badge(`Year ${g.year}`),
-      badge(formatWeek(g.week, g.seasonWeeks)),
-      badge(`Hours: ${g.hours.available} avail · ${g.hours.banked} banked (max ${g.hours.bankMax})`)
-    ]),
-    el("div", { class:"sep" }),
-    el("div", { class:"row" }, [
+  const phaseBadge = badge(`Phase: ${g.phase}`);
+
+  const topButtons = [];
+
+  if (g.phase === PHASES.REGULAR){
+    topButtons.push(
       button("Advance Week", {
         primary: true,
-        onClick: () => {
-          advanceWeek();
-          rerender(root);
-        }
-      }),
-      button("Go to Scouting", {
-        onClick: () => location.hash = "#/scouting"
-      }),
-      button("Save", {
-        onClick: () => {
-          const slot = getActiveSaveSlot() || "A";
-          saveToSlot(slot);
-          alert(`Saved to Slot ${slot}`);
-        }
+        onClick: () => rerender(root, () => advanceWeek())
       })
-    ]),
+    );
+
+    if (g.week === g.seasonWeeks){
+      topButtons.push(
+        button("Start Playoffs", {
+          primary: true,
+          onClick: () => {
+            startPlayoffs();
+            location.hash = "#/playoffs";
+          }
+        })
+      );
+    }
+  }
+
+  if (g.phase === PHASES.PLAYOFFS){
+    topButtons.push(button("Go to Playoffs", { primary:true, onClick: () => location.hash = "#/playoffs" }));
+  }
+  if (g.phase === PHASES.FREE_AGENCY){
+    topButtons.push(button("Go to Free Agency", { primary:true, onClick: () => location.hash = "#/free-agency" }));
+  }
+  if (g.phase === PHASES.DRAFT){
+    topButtons.push(button("Go to Draft", { primary:true, onClick: () => location.hash = "#/draft" }));
+  }
+
+  topButtons.push(
+    button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }),
+    button("Save", {
+      onClick: () => {
+        const slot = getActiveSaveSlot() || "A";
+        saveToSlot(slot);
+        alert(`Saved to Slot ${slot}`);
+      }
+    })
+  );
+
+  root.appendChild(card("Dashboard", "Regular season → Playoffs → Free Agency → Draft.", [
+    el("div", { class:"row" }, [
+      badge(`Year ${g.year}`),
+      g.phase === PHASES.REGULAR ? badge(formatWeek(g.week, g.seasonWeeks)) : null,
+      badge(`Hours: ${g.hours.available} avail · ${g.hours.banked} banked (max ${g.hours.bankMax})`),
+      phaseBadge
+    ].filter(Boolean)),
+    el("div", { class:"sep" }),
+    el("div", { class:"row" }, topButtons),
     el("div", { class:"sep" }),
     el("div", {}, [
       el("div", { class:"h2" }, "Inbox"),
-      ...(g.inbox.length ? g.inbox.slice(0, 6).map(m =>
-        el("div", { class:"p" }, `• ${m.msg}`)
-      ) : [el("div", { class:"p" }, "No messages yet.")])
+      ...(g.inbox.length ? g.inbox.slice(0, 8).map(m => el("div", { class:"p" }, `• ${m.msg}`))
+        : [el("div", { class:"p" }, "No messages yet.")])
     ])
-  ]));
-
-  root.appendChild(card("League (v1)", "Teams are loaded, standings & schedule come next.", [
-    el("div", { class:"p" }, `Teams: ${g.league.teams.length}`),
-    el("div", { class:"p" }, `Your team: ${g.league.teams[g.userTeamIndex].name}`)
   ]));
 
   return root;
 }
 
-function rerender(root){
-  // cheap rerender for v1
+function rerender(root, mut){
+  if (mut) mut();
   const parent = root.parentElement;
   if (!parent) return;
   parent.innerHTML = "";
