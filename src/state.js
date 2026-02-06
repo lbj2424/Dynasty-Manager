@@ -71,7 +71,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
       },
       playoffs: null,
       offseason: { freeAgents: null, draft: null },
-      inbox: []
+      inbox: [],
       history: [],
     }
   };
