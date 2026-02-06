@@ -72,6 +72,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
       playoffs: null,
       offseason: { freeAgents: null, draft: null },
       inbox: []
+      history: [],
     }
   };
 }
@@ -269,6 +270,10 @@ export function finalizePlayerAverages(){
     }
   }
 }
+finalizeSeasonAndLogHistory({
+  championTeamId: champion.id,
+  userPlayoffFinish: g.playoffs?.userFinish || "—"
+});
 
 // ===== PLAYOFFS + OFFSEASON remain mostly same as your current East/West version =====
 // Keep your existing startPlayoffs and simPlayoffRound from earlier.
@@ -343,3 +348,105 @@ export function advanceToNextYear(){
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
 }
+// ===================== HISTORY + AWARDS =====================
+
+export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
+  const g = STATE.game;
+
+  g.history ??= [];
+
+  const userTeam = g.league.teams[g.userTeamIndex];
+  const championTeam = g.league.teams.find(t => t.id === championTeamId);
+
+  const awards = computeAwards(g);
+
+  g.history.push({
+    year: g.year,
+    userRecord: { wins: userTeam.wins, losses: userTeam.losses },
+    userPlayoffFinish: userPlayoffFinish || null,
+    championTeam: championTeam?.name || "—",
+    awards
+  });
+
+  g.inbox.unshift({ t: Date.now(), msg: `Season ${g.year} awards announced and saved to History.` });
+}
+
+function computeAwards(g){
+  const all = [];
+  for (const t of g.league.teams){
+    for (const p of (t.roster || [])){
+      const gp = p.stats?.gp || 0;
+
+      // Your sim stores totals (pts/reb/ast), so convert to per-game for awards
+      const ptsPg = gp ? (p.stats.pts / gp) : 0;
+      const rebPg = gp ? (p.stats.reb / gp) : 0;
+      const astPg = gp ? (p.stats.ast / gp) : 0;
+
+      all.push({
+        team: t,
+        player: p,
+        gp,
+        ptsPg,
+        rebPg,
+        astPg
+      });
+    }
+  }
+
+  // avoid tiny sample sizes
+  const played = all.filter(x => x.gp >= 8);
+
+  // Offensive POY: scoring + some playmaking
+  const opoy = topBy(played, x => x.ptsPg * 1.0 + x.astPg * 0.45);
+
+  // MVP: offense + team success + OVR
+  const mvp = topBy(played, x => {
+    const winsBoost = x.team.wins * 0.10; // tuned for 20-week season
+    const ovrBoost = (x.player.ovr || 70) * 0.25;
+    return x.ptsPg * 1.15 + x.astPg * 0.65 + winsBoost + ovrBoost;
+  });
+
+  // Defensive POY: v1 approximation (until steals/blocks exist)
+  // favors bigs + higher OVR + stronger teams
+  const dpoy = topBy(played, x => {
+    const pos = x.player.pos || "";
+    const bigBonus = (pos === "C" ? 14 : pos === "PF" ? 9 : pos === "SF" ? 3 : 0);
+    const ovr = (x.player.ovr || 70);
+    const teamDefProxy = (x.team.rating || 70) * 0.35;
+    return bigBonus + ovr * 1.0 + teamDefProxy;
+  });
+
+  // Rookie of the Year: rookies only (rookieYear set in draft.js)
+  const rookies = played.filter(x => x.player.rookieYear === g.year);
+  const roy = rookies.length
+    ? topBy(rookies, x => x.ptsPg * 1.0 + x.astPg * 0.45 + (x.player.ovr || 70) * 0.2)
+    : null;
+
+  return {
+    MVP: packAward(mvp),
+    OPOY: packAward(opoy),
+    DPOY: packAward(dpoy),
+    ROY: roy ? packAward(roy) : null
+  };
+}
+
+function packAward(x){
+  if (!x) return null;
+  return { player: x.player.name, team: x.team.name };
+}
+
+function topBy(arr, scoreFn){
+  if (!arr.length) return null;
+  let best = arr[0];
+  let bestS = scoreFn(best);
+
+  for (let i=1;i<arr.length;i++){
+    const s = scoreFn(arr[i]);
+    if (s > bestS){
+      best = arr[i];
+      bestS = s;
+    }
+  }
+  return best;
+}
+
