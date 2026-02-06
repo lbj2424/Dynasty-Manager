@@ -29,7 +29,8 @@ export function PlayoffsScreen(){
     })
   ]));
 
-  for (let i=0;i<bracket.rounds.length;i++){
+  for (let i=0;i<(bracket.rounds?.length || 0); i++)
+{
     const r = bracket.rounds[i];
     root.appendChild(renderRound(r, g));
   }
