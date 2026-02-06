@@ -175,20 +175,73 @@ export function getState(){ return STATE; }
 export function ensureAppState(loadedOrNull){
   if (loadedOrNull){
     STATE = loadedOrNull;
-    // basic migration safety
+    
+    // --- MIGRATION: Backfill Missing Data for Old Saves ---
+    
+    // 1. Ensure history exists
     STATE.game.history ??= [];
+
+    // 2. Loop through all teams to backfill Picks and Rotations
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0;
       t.losses ??= 0;
-      t.assets ??= { picks: generateFuturePicks(t.id, STATE.game.year) }; // Backfill picks
+      
+      // Backfill Assets (Draft Picks) if missing
+      t.assets ??= { picks: generateFuturePicks(t.id, STATE.game.year) };
+      
+      // Ensure Cap exists
+      t.cap ??= { cap: SALARY_CAP, payroll: 0 };
+
+      // Backfill Player Data
+      let needsRotationFix = false;
       t.roster?.forEach(p => {
         p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
         p.happiness ??= 70;
+        
+        // Check if rotation is missing
+        if (!p.rotation) {
+            p.rotation = { minutes: 0, isStarter: false };
+            needsRotationFix = true;
+        }
       });
+
+      // If this is an old save with no minutes assigned, Auto-Distribute them now
+      // otherwise the team will score 0 points in simulation.
+      if (needsRotationFix) {
+          autoDistributeMinutes(t);
+      }
+      
+      recalcPayroll(t);
     });
+    
     return;
   }
   STATE = newGameState({ userTeamIndex: 0 });
+}
+
+// --- Helper for Migration ---
+function autoDistributeMinutes(team){
+    const sorted = team.roster.sort((a,b) => b.ovr - a.ovr);
+    let remain = 205;
+
+    // Reset
+    sorted.forEach(p => { p.rotation.minutes = 0; p.rotation.isStarter = false; });
+
+    // Top 5
+    for(let i=0; i<Math.min(5, sorted.length); i++){
+        sorted[i].rotation.isStarter = true;
+        const give = 33; 
+        sorted[i].rotation.minutes = give;
+        remain -= give;
+    }
+    // Next 5
+    for(let i=5; i<Math.min(10, sorted.length); i++){
+        const give = 8;
+        sorted[i].rotation.minutes = give;
+        remain -= give;
+    }
+    // Remainder to best player
+    if (sorted.length > 0) sorted[0].rotation.minutes += remain;
 }
 
 // -------------------- NEW GAME --------------------
