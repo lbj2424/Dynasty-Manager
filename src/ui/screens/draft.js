@@ -17,6 +17,17 @@ export function DraftScreen(){
   }
 
   const d = g.offseason.draft;
+
+  // --- FIX: Check if draft is done before rendering the board ---
+  if (d.done) {
+    root.appendChild(card("Draft Complete", "All rounds finished.", [
+      el("div", { class:"p" }, "Review the picks below, then advance to the next season.")
+    ]));
+    root.appendChild(renderDrafted(d, g));
+    return root;
+  }
+  // -------------------------------------------------------------
+
   const teamById = (id) => g.league.teams.find(t => t.id === id);
 
   // safety for old saves
@@ -184,6 +195,8 @@ function makePick(d, teamId, prospect, g){
 
 // ---------- CPU PICK: weighted randomness ----------
 function cpuPickWeighted(d, teamId, g){
+  if (d.done) return; // safety
+  
   const available = d.declaredProspects.filter(p => !p._drafted);
   if (!available.length) {
     d.done = true;
