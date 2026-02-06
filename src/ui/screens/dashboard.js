@@ -37,7 +37,7 @@ export function DashboardScreen(){
     })
   );
 }
-
+}
 
   if (g.phase === PHASES.PLAYOFFS){
     topButtons.push(button("Go to Playoffs", { primary:true, onClick: () => location.hash = "#/playoffs" }));
