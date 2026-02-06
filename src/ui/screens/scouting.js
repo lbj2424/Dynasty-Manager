@@ -14,21 +14,22 @@ export function ScoutingScreen(){
     { key:"INTL", label:"International (7 Continents)" }
   ];
 
+  // safety: ensure arrays exist (old saves)
+  g.scouting.scoutedNCAAIds ??= [];
+  g.scouting.scoutedIntlIds ??= [];
+  g.scouting.intlFoundWeekById ??= {};
+
   root.appendChild(card("Scouting", "Find and secure your next diamond.", [
     el("div", { class:"row" }, [
+      badge(`Week: ${g.week}/${g.seasonWeeks}`),
       badge(`Hours: ${g.hours.available} avail · ${g.hours.banked} banked`),
       badge(`Declare threshold: ${DECLARE_THRESHOLD}`),
-      badge(`Draft stock: ${g.scouting.ncaa.length} NCAA · ${g.scouting.intlPool.length} Intl hidden`)
+      badge(`Draft stock: ${g.scouting.ncaa.length} NCAA · ${g.scouting.intlPool.length} Intl`)
     ]),
-    tabs(tabItems, g.scouting.tab, (k) => { g.scouting.tab = k; rerender(root); })
+    tabs(tabItems, g.scouting.tab, (k) => { g.scouting.tab = k; rerender(); })
   ]));
 
-  if (g.scouting.tab === "NCAA"){
-    root.appendChild(renderNCAA());
-  } else {
-    root.appendChild(renderInternational());
-  }
-
+  root.appendChild(g.scouting.tab === "NCAA" ? renderNCAA() : renderInternational());
   return root;
 }
 
@@ -36,25 +37,31 @@ function renderNCAA(){
   const s = getState();
   const g = s.game;
 
+  g.scouting.scoutedNCAAIds ??= [];
+
   const rows = g.scouting.ncaa.slice(0, 40).map(p => {
-    const canScout = !p.scouted;
+    const isScouted = !!p.scouted || g.scouting.scoutedNCAAIds.includes(p.id);
 
     return el("tr", {}, [
       el("td", {}, p.name),
       el("td", {}, p.pos),
-      el("td", {}, canScout ? "Unknown" : String(p.currentOVR)),
-      el("td", {}, canScout ? "Unknown" : p.potentialGrade),
+      el("td", {}, isScouted ? String(p.currentOVR) : "Unknown"),
+      el("td", {}, isScouted ? p.potentialGrade : "Unknown"),
       el("td", {}, p.declared ? "Yes" : "No"),
       el("td", {}, [
-        button(canScout ? "Scout (1h)" : "Scouted", {
+        button(isScouted ? "Scouted" : "Scout (1h)", {
           small: true,
-          primary: canScout,
+          primary: !isScouted,
           onClick: () => {
-            if (!canScout) return;
+            if (isScouted) return;
             const ok = spendHours(1);
             if (!ok) return alert("Not enough hours.");
+
             p.scouted = true;
-            rerender(document.querySelector("#app > div"));
+            if (!g.scouting.scoutedNCAAIds.includes(p.id)){
+              g.scouting.scoutedNCAAIds.push(p.id);
+            }
+            rerender();
           }
         })
       ])
@@ -62,6 +69,7 @@ function renderNCAA(){
   });
 
   return card("NCAA Draft Stock", "100 prospects. No travel cost. Scouting reveals true OVR + potential grade.", [
+    el("div", { class:"p" }, `You have scouted ${g.scouting.scoutedNCAAIds.length} NCAA prospects.`),
     el("table", { class:"table" }, [
       el("thead", {}, el("tr", {}, [
         el("th", {}, "Player"),
@@ -81,6 +89,9 @@ function renderInternational(){
   const s = getState();
   const g = s.game;
 
+  g.scouting.scoutedIntlIds ??= [];
+  g.scouting.intlFoundWeekById ??= {};
+
   const loc = g.scouting.intlLocation;
   const locObj = loc ? CONTINENTS.find(c => c.key === loc) : null;
 
@@ -90,7 +101,7 @@ function renderInternational(){
       small: true,
       onClick: () => {
         g.scouting.intlLocation = null;
-        rerender(document.querySelector("#app > div"));
+        rerender();
       }
     })
   ]);
@@ -112,7 +123,7 @@ function renderInternational(){
           const ok = spendHours(c.travelHours);
           if (!ok) return alert("Not enough hours to travel.");
           g.scouting.intlLocation = c.key;
-          rerender(document.querySelector("#app > div"));
+          rerender();
         }
       })
     ]);
@@ -126,28 +137,38 @@ function renderInternational(){
         const ok = spendHours(2);
         if (!ok) return alert("Not enough hours.");
 
-        // Discover 0-3 prospects from this continent based on density
         const c = CONTINENTS.find(x => x.key === g.scouting.intlLocation);
         const density = c?.density ?? 0.5;
 
         const foundCount = rollFoundCount(density);
-        const pool = g.scouting.intlPool.filter(p => p.continentKey === g.scouting.intlLocation && !p.discovered);
+
+        // find prospects from this continent that are not discovered yet
+        const pool = g.scouting.intlPool.filter(p =>
+          p.continentKey === g.scouting.intlLocation && !p.discovered
+        );
+
+        let actuallyFound = 0;
 
         for (let i=0;i<foundCount;i++){
           const p = pool[i];
           if (!p) break;
+
           p.discovered = true;
-          // discovered does NOT auto-scout in v1. You still need to scout to see OVR/grade.
-          g.scouting.intlDiscoveredIds.push(p.id);
+          actuallyFound++;
+
+          // mark "found week" ONE time so they can expire after 3 weeks if not declared
+          if (!p.declared && !g.scouting.intlFoundWeekById[p.id]){
+            g.scouting.intlFoundWeekById[p.id] = g.week;
+          }
         }
 
-        if (foundCount > 0){
-          g.inbox.unshift({ t: Date.now(), msg: `Scouting: found ${foundCount} prospect(s) in ${c.name}.` });
+        if (actuallyFound > 0){
+          g.inbox.unshift({ t: Date.now(), msg: `Scouting: found ${actuallyFound} prospect(s) in ${c.name}.` });
         } else {
           g.inbox.unshift({ t: Date.now(), msg: `Scouting: no new prospects found in ${c.name}.` });
         }
 
-        rerender(document.querySelector("#app > div"));
+        rerender();
       }
     })
   ]);
@@ -155,26 +176,34 @@ function renderInternational(){
   const discovered = g.scouting.intlPool.filter(p => p.discovered).slice(0, 60);
 
   const rows = discovered.map(p => {
-    const canScout = !p.scouted;
-    const canRecruit = p.scouted && !p.declared;
+    const isScouted = !!p.scouted || g.scouting.scoutedIntlIds.includes(p.id);
+    const canRecruit = isScouted && !p.declared;
+
+    const foundWeek = g.scouting.intlFoundWeekById?.[p.id];
+    const weeksSinceFound = foundWeek ? (g.week - foundWeek) : 0;
+    const expiresIn = p.declared ? null : clamp(3 - weeksSinceFound, 0, 3);
 
     return el("tr", {}, [
       el("td", {}, p.name),
       el("td", {}, p.pos),
-      el("td", {}, canScout ? "Unknown" : String(p.currentOVR)),
-      el("td", {}, canScout ? "Unknown" : p.potentialGrade),
+      el("td", {}, isScouted ? String(p.currentOVR) : "Unknown"),
+      el("td", {}, isScouted ? p.potentialGrade : "Unknown"),
       el("td", {}, p.declared ? "Yes" : "No"),
       el("td", {}, p.declared ? "-" : `${p.declareInterest ?? 0}`),
+      el("td", {}, p.declared ? "-" : (foundWeek ? `${expiresIn}w` : "-")),
       el("td", {}, [
-        button(canScout ? "Scout (2h)" : "Scouted", {
+        button(isScouted ? "Scouted" : "Scout (2h)", {
           small: true,
-          primary: canScout,
+          primary: !isScouted,
           onClick: () => {
-            if (!canScout) return;
+            if (isScouted) return;
             const ok = spendHours(2);
             if (!ok) return alert("Not enough hours.");
             p.scouted = true;
-            rerender(document.querySelector("#app > div"));
+            if (!g.scouting.scoutedIntlIds.includes(p.id)){
+              g.scouting.scoutedIntlIds.push(p.id);
+            }
+            rerender();
           }
         }),
         el("span", {}, " "),
@@ -186,19 +215,20 @@ function renderInternational(){
             const ok = spendHours(3);
             if (!ok) return alert("Not enough hours.");
 
-            // Interest gain depends on potential (diamonds are harder) + slight randomness
             const base = 10;
-            const gradePenalty = gradeRecruitPenalty(p.potentialGrade); // higher grade harder to convince
+            const gradePenalty = gradeRecruitPenalty(p.potentialGrade);
             const gain = clamp(base - gradePenalty + Math.floor(Math.random()*6), 4, 14);
 
             p.declareInterest = clamp((p.declareInterest ?? 0) + gain, 0, 100);
 
             if (p.declareInterest >= DECLARE_THRESHOLD){
               p.declared = true;
+              // once declared, they should never expire
+              delete g.scouting.intlFoundWeekById[p.id];
               g.inbox.unshift({ t: Date.now(), msg: `${p.name} (${p.potentialGrade}) agreed to declare for the draft.` });
             }
 
-            rerender(document.querySelector("#app > div"));
+            rerender();
           }
         })
       ])
@@ -214,7 +244,8 @@ function renderInternational(){
     card("On-site Actions", "Search takes time and may find nothing. That’s intentional.", [
       actions
     ]),
-    card("Discovered Prospects", "Showing up to 60 discovered prospects. Scout to reveal truthful OVR + potential grade.", [
+    card("Discovered Prospects", "Players can disappear 3 weeks after being found if they haven’t declared.", [
+      el("div", { class:"p" }, `You have scouted ${g.scouting.scoutedIntlIds.length} international prospects.`),
       el("table", { class:"table" }, [
         el("thead", {}, el("tr", {}, [
           el("th", {}, "Player"),
@@ -223,6 +254,7 @@ function renderInternational(){
           el("th", {}, "Pot"),
           el("th", {}, "Declared"),
           el("th", {}, "Interest"),
+          el("th", {}, "Expires In"),
           el("th", {}, "Actions")
         ])),
         el("tbody", {}, rows)
@@ -232,9 +264,7 @@ function renderInternational(){
 }
 
 function rollFoundCount(density){
-  // density scales chance of 1-3 finds
   const x = Math.random();
-  // baseline: 35% none, 45% one, 15% two, 5% three (scaled by density)
   const none = 0.45 - 0.20 * density;
   const one  = 0.40 + 0.10 * density;
   const two  = 0.12 + 0.08 * density;
@@ -247,7 +277,6 @@ function rollFoundCount(density){
 }
 
 function gradeRecruitPenalty(grade){
-  // higher potential grades are harder to convince
   return ({
     "A+": 6,
     "A":  4,
@@ -258,13 +287,8 @@ function gradeRecruitPenalty(grade){
   })[grade] ?? 2;
 }
 
-function rerender(root){
-  // for v1 simplicity, rerender entire current screen
+function rerender(){
   const app = document.getElementById("app");
   if (!app) return;
-  const curHash = location.hash;
-  app.innerHTML = "";
-  // re-importing screen is unnecessary; router will render on hashchange.
-  // so we simulate it by dispatching a hashchange event.
   window.dispatchEvent(new HashChangeEvent("hashchange"));
 }
