@@ -6,6 +6,8 @@ import { FreeAgencyScreen } from "./ui/screens/freeAgency.js";
 import { DraftScreen } from "./ui/screens/draft.js";
 import { TeamScreen } from "./ui/screens/team.js";
 import { StandingsScreen } from "./ui/screens/standings.js";
+import { HistoryScreen } from "./ui/screens/history.js";
+
 
 export const routes = {
   "/": HomeScreen,
@@ -16,6 +18,8 @@ export const routes = {
   "/playoffs": PlayoffsScreen,
   "/free-agency": FreeAgencyScreen,
   "/draft": DraftScreen
+  "/history": HistoryScreen,
+
 };
 
 export function mountRouter(appEl, routesMap){
