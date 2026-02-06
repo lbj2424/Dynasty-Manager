@@ -6,7 +6,7 @@ export function DepthChartScreen(){
   const g = s.game;
   const team = g.league.teams[g.userTeamIndex];
 
-  // Ensure everyone has rotation object (just in case)
+  // Ensure everyone has rotation object
   team.roster.forEach(p => {
       p.rotation ??= { minutes: 0, isStarter: false };
   });
@@ -15,31 +15,46 @@ export function DepthChartScreen(){
 
   // Calculation
   const totalMins = team.roster.reduce((sum, p) => sum + (p.rotation.minutes || 0), 0);
-  const MAX_MINS = 205; // 5 * 41
+  const MAX_MINS = 205; 
   
-  // Count starters
-  const starterCount = team.roster.filter(p => p.rotation.isStarter).length;
+  // Count starters by position
+  const starters = { PG:0, SG:0, SF:0, PF:0, C:0 };
+  let starterCount = 0;
+  team.roster.forEach(p => {
+      if(p.rotation.isStarter) {
+          if(starters[p.pos] !== undefined) starters[p.pos]++;
+          starterCount++;
+      }
+  });
 
   const statusColor = totalMins === MAX_MINS ? "var(--good)" : totalMins > MAX_MINS ? "var(--bad)" : "var(--warn)";
-  const starterColor = starterCount === 5 ? "var(--good)" : "var(--bad)";
+  // Valid lineup = exactly 1 at each position
+  const isValidLineup = starters.PG===1 && starters.SG===1 && starters.SF===1 && starters.PF===1 && starters.C===1;
+  const starterColor = isValidLineup ? "var(--good)" : "var(--bad)";
   
-  root.appendChild(card("Depth Chart", "Game is 41 minutes long. Total minutes available: 205.", [
+  root.appendChild(card("Depth Chart", "Lineup must have 1 starter per position.", [
       el("div", { class:"row" }, [
           badge(`Roster: ${team.roster.length}`),
           el("span", { class:"badge", style:`color:${statusColor}; border-color:${statusColor}` }, `Allocated: ${totalMins} / ${MAX_MINS}`),
-          el("span", { class:"badge", style:`color:${starterColor}; border-color:${starterColor}` }, `Starters: ${starterCount} / 5`)
+          el("span", { class:"badge", style:`color:${starterColor}; border-color:${starterColor}` }, 
+            isValidLineup ? "Lineup Valid" : `Invalid (Need 1 of each PG/SG/SF/PF/C)`
+          )
       ]),
       el("div", { class:"sep" }),
       el("div", { class:"row" }, [
         button("Auto-Distribute", {
             onClick: () => {
-                autoDistribute(team);
+                // We need to import the new autoDistribute logic from state or replicate it here. 
+                // Since this file can't import the helper from state easily without exporting it,
+                // I will include the logic locally here for the UI button.
+                autoDistributeUI(team); 
                 rerender(root);
             }
         }),
         button("Save Changes", {
             primary: true,
             onClick: () => {
+                if(!isValidLineup) return alert("Invalid Lineup! You must have exactly one starter for each position (PG, SG, SF, PF, C).");
                 const slot = getActiveSaveSlot() || "A";
                 saveToSlot(slot);
                 alert(`Rotation saved to Slot ${slot}.`);
@@ -48,13 +63,19 @@ export function DepthChartScreen(){
       ])
   ]));
 
-  // Roster List with Inputs
-  const rows = team.roster.slice().sort((a,b) => b.ovr - a.ovr).map(p => {
+  // Roster List Sorted by Position then OVR
+  const posOrder = { "PG":1, "SG":2, "SF":3, "PF":4, "C":5 };
+  const sortedRoster = team.roster.slice().sort((a,b) => {
+      if (posOrder[a.pos] !== posOrder[b.pos]) return posOrder[a.pos] - posOrder[b.pos];
+      return b.ovr - a.ovr;
+  });
+
+  const rows = sortedRoster.map(p => {
       
       const minInput = el("input", { 
           type:"number", 
           min:"0", 
-          max:"41", 
+          max:"48", 
           value: String(p.rotation.minutes),
           style: "width:60px; padding:4px; border-radius:4px; border:1px solid var(--line); background:rgba(0,0,0,0.2); color:var(--text);"
       });
@@ -62,32 +83,32 @@ export function DepthChartScreen(){
       minInput.onchange = (e) => {
           let val = parseInt(e.target.value) || 0;
           if (val < 0) val = 0;
-          if (val > 41) val = 41;
+          if (val > 48) val = 48;
           p.rotation.minutes = val;
           rerender(root);
       };
 
-      const startCheck = el("input", { type:"checkbox", checked: p.rotation.isStarter });
+      const startCheck = el("input", { type:"checkbox", checked: !!p.rotation.isStarter });
       startCheck.onchange = (e) => {
-          const isChecking = e.target.checked;
-          const currentStarters = team.roster.filter(x => x.rotation.isStarter).length;
-
-          // Enforce 5 starters limit
-          if (isChecking && currentStarters >= 5) {
-              e.target.checked = false; // Undo the check
-              alert("You can only have 5 starters. Uncheck someone else first.");
-              return;
+          if (e.target.checked) {
+              // Uncheck everyone else of this position
+              team.roster.forEach(other => {
+                  if (other.pos === p.pos && other.id !== p.id) {
+                      other.rotation.isStarter = false;
+                  }
+              });
+              p.rotation.isStarter = true;
+          } else {
+              p.rotation.isStarter = false;
           }
-          
-          p.rotation.isStarter = isChecking;
-          rerender(root); // Re-render to update the starter count badge
+          rerender(root);
       };
 
       return el("tr", {}, [
           el("td", {}, p.name),
           el("td", {}, p.pos),
           el("td", {}, String(p.ovr)),
-          el("td", {}, `${p.stats.pts.toFixed(1)} PPG`), // Context for decisions
+          el("td", {}, `${p.stats.pts.toFixed(1)} PPG`),
           el("td", {}, startCheck),
           el("td", {}, minInput),
           el("td", {}, el("div", { 
@@ -96,7 +117,7 @@ export function DepthChartScreen(){
       ]);
   });
 
-  root.appendChild(card("Rotation", "Check box for 'Starter' (Limit 5). Minutes determine stats.", [
+  root.appendChild(card("Rotation", "Check 'Start' to set the starter for that position.", [
       el("table", { class:"table" }, [
           el("thead", {}, el("tr", {}, [
               el("th", {}, "Player"),
@@ -114,35 +135,33 @@ export function DepthChartScreen(){
   return root;
 }
 
-function autoDistribute(team){
-    // Sort by OVR
-    const sorted = team.roster.sort((a,b) => b.ovr - a.ovr);
+// Local version for the UI button
+function autoDistributeUI(team){
+    team.roster.forEach(p => { p.rotation = { minutes: 0, isStarter: false }; });
+    let remain = 205; 
+    const positions = ["PG","SG","SF","PF","C"];
     
-    // Reset
-    sorted.forEach(p => {
-        p.rotation.minutes = 0; 
-        p.rotation.isStarter = false;
-    });
-
-    let remain = 205;
-    
-    // Top 5 (Starters)
-    for(let i=0; i<Math.min(5, sorted.length); i++){
-        sorted[i].rotation.isStarter = true;
-        const give = 33; 
-        sorted[i].rotation.minutes = give;
-        remain -= give;
+    // Starters
+    for (const pos of positions) {
+        const candidates = team.roster
+            .filter(p => p.pos === pos && !p.rotation.isStarter)
+            .sort((a,b) => b.ovr - a.ovr);
+        
+        if (candidates.length > 0) {
+            candidates[0].rotation.isStarter = true;
+            candidates[0].rotation.minutes = 34;
+            remain -= 34;
+        }
     }
-    
-    // Next 5 (Bench)
-    for(let i=5; i<Math.min(10, sorted.length); i++){
-        const give = 8;
-        sorted[i].rotation.minutes = give;
-        remain -= give;
+    // Bench
+    const bench = team.roster.filter(p => !p.rotation.isStarter).sort((a,b) => b.ovr - a.ovr);
+    for (let i = 0; i < Math.min(5, bench.length); i++) {
+        bench[i].rotation.minutes = 10;
+        remain -= 10;
     }
-    
-    // Add remainder to best players
-    if (sorted.length > 0) sorted[0].rotation.minutes += remain;
+    // Remainder
+    const best = team.roster.sort((a,b)=>b.ovr-a.ovr)[0];
+    if(best && remain > 0) best.rotation.minutes += remain;
 }
 
 function rerender(root){
