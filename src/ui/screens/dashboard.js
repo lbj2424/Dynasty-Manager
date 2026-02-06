@@ -27,18 +27,17 @@ export function DashboardScreen(){
     );
 
     if (g.week === g.seasonWeeks){
-      topButtons.push(
-        button("Start Playoffs", {
-          primary: true,
-          onClick: () => {
-  location.hash = "#/playoffs";
+  topButtons.push(
+    button("Start Playoffs", {
+      primary: true,
+      onClick: () => {
+        startPlayoffs();
+        location.hash = "#/playoffs";
+      }
+    })
+  );
 }
-            location.hash = "#/playoffs";
-          }
-        })
-      );
-    }
-  }
+
 
   if (g.phase === PHASES.PLAYOFFS){
     topButtons.push(button("Go to Playoffs", { primary:true, onClick: () => location.hash = "#/playoffs" }));
