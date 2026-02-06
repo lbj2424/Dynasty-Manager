@@ -13,7 +13,6 @@ export function generateLeague({ seed="league_v1" } = {}){
     losses: 0,
     cap: { cap: SALARY_CAP, payroll: 0 },
     roster: [],
-    picks: { r1: true, r2: true }
   }));
 
   return { id: id("league", r), seed, teams };
