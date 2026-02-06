@@ -183,26 +183,48 @@ function processEndSeasonRoster(g){
 // -------------------- HELPER FUNCTIONS --------------------
 
 function autoDistributeMinutes(team){
-    const sorted = (team.roster || []).sort((a,b) => b.ovr - a.ovr);
+    // 1. Reset everyone
+    team.roster.forEach(p => { 
+        p.rotation = { minutes: 0, isStarter: false }; 
+    });
+
     let remain = 205; 
+    const positions = ["PG","SG","SF","PF","C"];
+    const starters = [];
 
-    sorted.forEach(p => { p.rotation = { minutes: 0, isStarter: false }; });
+    // 2. Pick STARTERS (Best OVR per position)
+    for (const pos of positions) {
+        // Find best available player for this position
+        const candidates = team.roster
+            .filter(p => p.pos === pos && !p.rotation.isStarter)
+            .sort((a,b) => b.ovr - a.ovr);
+        
+        if (candidates.length > 0) {
+            const starter = candidates[0];
+            starter.rotation.isStarter = true;
+            starter.rotation.minutes = 34; // Heavy starter minutes
+            remain -= 34;
+            starters.push(starter);
+        }
+    }
 
-    // Starters
-    for(let i=0; i<Math.min(5, sorted.length); i++){
-        sorted[i].rotation.isStarter = true;
-        const give = 33; 
-        sorted[i].rotation.minutes = give;
-        remain -= give;
+    // 3. Fill BENCH with whoever is left (Best OVR regardless of position)
+    const bench = team.roster
+        .filter(p => !p.rotation.isStarter)
+        .sort((a,b) => b.ovr - a.ovr);
+
+    // Give minutes to top 5 bench players
+    for (let i = 0; i < Math.min(5, bench.length); i++) {
+        const p = bench[i];
+        const mins = 10; // Solid bench minutes
+        p.rotation.minutes = mins;
+        remain -= mins;
     }
-    // Bench
-    for(let i=5; i<Math.min(10, sorted.length); i++){
-        const give = 8;
-        sorted[i].rotation.minutes = give;
-        remain -= give;
+
+    // 4. Dump remaining minutes (if any) onto the best player/starters
+    if (remain > 0 && starters.length > 0) {
+        starters[0].rotation.minutes += remain;
     }
-    // Remainder
-    if (sorted.length > 0) sorted[0].rotation.minutes += remain;
 }
 
 function generateFuturePicks(teamId, startYear){
