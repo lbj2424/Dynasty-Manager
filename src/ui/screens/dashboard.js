@@ -4,7 +4,6 @@ import {
   advanceWeek,
   saveToSlot,
   getActiveSaveSlot,
-  startPlayoffs
 } from "../../state.js";
 import { formatWeek } from "../../utils.js";
 import { PHASES } from "../../data/constants.js";
@@ -32,7 +31,8 @@ export function DashboardScreen(){
         button("Start Playoffs", {
           primary: true,
           onClick: () => {
-            startPlayoffs();
+  location.hash = "#/playoffs";
+}
             location.hash = "#/playoffs";
           }
         })
