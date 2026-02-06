@@ -1,7 +1,7 @@
 import { generateLeague } from "./gen/league.js";
 import { generateNCAAProspects, generateInternationalPool } from "./gen/prospects.js";
 import { generateFreeAgents } from "./gen/freeAgents.js";
-import { generateTeamRoster, calculateSalary } from "./gen/players.js"; // Import calculateSalary
+import { generateTeamRoster, calculateSalary } from "./gen/players.js";
 import {
   HOURS_BANK_MAX,
   HOURS_PER_WEEK,
@@ -89,7 +89,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.3.7", createdAt: Date.now() },
+    meta: { version: "0.3.8", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -107,7 +107,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
         scoutedNCAAIds: [], scoutedIntlIds: [], intlFoundWeekById: {}, intlLocation: null
       },
       playoffs: null,
-      offseason: { freeAgents: null, draft: null, expiring: [] }, // Added expiring array
+      offseason: { freeAgents: null, draft: null, expiring: [] },
       inbox: [],
       history: []
     }
@@ -118,7 +118,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
 
 function processEndSeasonRoster(g){
   const userTeamId = g.league.teams[g.userTeamIndex].id;
-  g.offseason.expiring = []; // Reset expiring list
+  g.offseason.expiring = []; 
 
   for(const t of g.league.teams){
     const nextRoster = [];
@@ -145,14 +145,14 @@ function processEndSeasonRoster(g){
       if(p.contract.years > 0){
         nextRoster.push(p);
       } else {
-        // Player Contract Expired -> Move to Expiring List
+        // Player Contract Expired
         if(t.id === userTeamId){
            g.inbox.unshift({ t:Date.now(), msg:`${p.name}'s contract expired. They entered Free Agency.` });
         }
         
         // Prepare player for Free Agency
         const fairValue = calculateSalary(p.ovr, p.age);
-        const greed = 0.9 + Math.random() * 0.3; // 0.9x to 1.2x greed
+        const greed = 0.9 + Math.random() * 0.3; 
         
         const faObj = {
             id: p.id,
@@ -378,33 +378,50 @@ function simWeekGames(g){
   const bundle = g.schedule.find(x => x.week === wk);
   if (!bundle) return;
 
+  const userTeamId = g.league.teams[g.userTeamIndex].id;
+
   for (const [aId, bId] of bundle.games){
     const A = g.league.teams.find(t => t.id === aId);
     const B = g.league.teams.find(t => t.id === bId);
     if (!A || !B) continue;
 
-    A.wins ??= 0; A.losses ??= 0;
-    B.wins ??= 0; B.losses ??= 0;
+    // 1. Simulate Stats & Get Total Points
+    let ptsA = simTeamStats(A);
+    let ptsB = simTeamStats(B);
 
-    const pA = clamp(
-      0.5 + (A.rating - B.rating) * 0.015 + (Math.random()*0.06 - 0.03),
-      0.15,
-      0.85
-    );
+    // 2. Handle Overtime (prevent ties)
+    while (ptsA === ptsB) {
+        ptsA += Math.floor(Math.random() * 6);
+        ptsB += Math.floor(Math.random() * 6);
+    }
 
-    const aWin = Math.random() < pA;
+    // 3. Determine Winner based on Score
+    const aWin = ptsA > ptsB;
+
     if (aWin){ A.wins += 1; B.losses += 1; }
     else { B.wins += 1; A.losses += 1; }
 
-    simTeamStats(A);
-    simTeamStats(B);
     bumpHappiness(A, aWin ? +1 : -1);
     bumpHappiness(B, aWin ? -1 : +1);
+
+    // 4. Log User Game Result
+    if (A.id === userTeamId || B.id === userTeamId) {
+        const userWon = (A.id === userTeamId && aWin) || (B.id === userTeamId && !aWin);
+        const opponent = A.id === userTeamId ? B : A;
+        const scoreStr = `${Math.max(ptsA, ptsB)}-${Math.min(ptsA, ptsB)}`;
+        
+        g.inbox.unshift({ 
+            t: Date.now(), 
+            msg: `Week ${g.week}: ${userWon ? "WON" : "LOST"} vs ${opponent.name} (${scoreStr})` 
+        });
+    }
   }
 }
 
 function simTeamStats(team){
   const roster = team.roster || [];
+  let totalTeamPoints = 0;
+
   for (const p of roster){
     p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
     p.rotation ??= { minutes: 0, isStarter: false };
@@ -426,7 +443,10 @@ function simTeamStats(team){
     p.stats.pts += pts;
     p.stats.reb += reb;
     p.stats.ast += ast;
+    
+    totalTeamPoints += pts;
   }
+  return Math.round(totalTeamPoints);
 }
 
 function bumpHappiness(team, delta){
@@ -639,7 +659,7 @@ export function advanceToNextYear(){
   g.playoffs = null;
   g.offseason.freeAgents = null;
   g.offseason.draft = null;
-  g.offseason.expiring = []; // Clear old expiring list
+  g.offseason.expiring = []; 
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
 }
