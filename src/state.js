@@ -172,31 +172,39 @@ export function startPlayoffs(){
 
   finalizeRegularSeasonIfNeeded();
 
-  const teams = [...g.league.teams].sort((a,b) => b.wins - a.wins);
-  const top16 = teams.slice(0, 16);
+  const east = g.league.teams
+    .filter(t => t.conference === "EAST")
+    .sort((a,b) => b.wins - a.wins)
+    .slice(0, 8);
 
-  // bracket pairs: 1v16, 2v15, ...
-  const series = [];
-  for (let i=0;i<8;i++){
-    const high = top16[i];
-    const low  = top16[15 - i];
-    series.push(makeSeries(high.id, low.id));
-  }
+  const west = g.league.teams
+    .filter(t => t.conference === "WEST")
+    .sort((a,b) => b.wins - a.wins)
+    .slice(0, 8);
+
+  // 1v8, 2v7, 3v6, 4v5
+  const seedSeries = (arr8) => ([
+    makeSeries(arr8[0].id, arr8[7].id),
+    makeSeries(arr8[1].id, arr8[6].id),
+    makeSeries(arr8[2].id, arr8[5].id),
+    makeSeries(arr8[3].id, arr8[4].id)
+  ]);
 
   g.playoffs = {
     round: 1,
     rounds: [
-      { name: "Round 1", series },
-      { name: "Round 2", series: [] },
-      { name: "Conference Finals", series: [] },
-      { name: "Finals", series: [] }
+      { name: "Round 1", east: seedSeries(east), west: seedSeries(west) },
+      { name: "Conference Semifinals", east: [], west: [] },
+      { name: "Conference Finals", east: [], west: [] },
+      { name: "Finals", finals: [] }
     ],
     championTeamId: null
   };
 
   g.phase = PHASES.PLAYOFFS;
-  g.inbox.unshift({ t: Date.now(), msg: "Playoffs started (Top 16 overall, best of 7)." });
+  g.inbox.unshift({ t: Date.now(), msg: "Playoffs started (East/West top 8, best of 7)." });
 }
+
 
 function makeSeries(teamAId, teamBId){
   return {
@@ -207,6 +215,17 @@ function makeSeries(teamAId, teamBId){
     done: false,
     winner: null
   };
+}
+function winnersFromSeries(seriesList){
+  return (seriesList || []).map(s => s.winner).filter(Boolean);
+}
+
+function pairWinners(winners){
+  const out = [];
+  for (let i=0;i<winners.length;i+=2){
+    out.push(makeSeries(winners[i], winners[i+1]));
+  }
+  return out;
 }
 
 function teamById(id){
@@ -239,29 +258,46 @@ export function simPlayoffRound(){
   const g = STATE.game;
   if (g.phase !== PHASES.PLAYOFFS) return;
 
-  const cur = g.playoffs.rounds[g.playoffs.round - 1];
-  for (const s of cur.series){
-    if (!s.done) simulateSeries(s);
-  }
+  const bracket = g.playoffs;
+  const cur = bracket.rounds[bracket.round - 1];
 
-  // advance winners
-  const winners = cur.series.map(s => s.winner);
-  if (g.playoffs.round === 4){
-    g.playoffs.championTeamId = winners[0];
-    g.inbox.unshift({ t: Date.now(), msg: `Champion crowned: ${teamById(winners[0]).name}.` });
-    // go to free agency
-    startFreeAgency();
+  // Sim current round series
+  if (bracket.round <= 3){
+    for (const s of (cur.east || [])) if (!s.done) simulateSeries(s);
+    for (const s of (cur.west || [])) if (!s.done) simulateSeries(s);
+
+    const eastW = winnersFromSeries(cur.east);
+    const westW = winnersFromSeries(cur.west);
+
+    if (bracket.round === 3){
+      // Move to Finals
+      const finalsRound = bracket.rounds[3];
+      finalsRound.finals = [ makeSeries(eastW[0], westW[0]) ];
+      bracket.round = 4;
+      g.inbox.unshift({ t: Date.now(), msg: "Finals set: East champ vs West champ." });
+      return;
+    }
+
+    // Build next round in each conference
+    const next = bracket.rounds[bracket.round]; // next object
+    next.east = pairWinners(eastW);
+    next.west = pairWinners(westW);
+    bracket.round += 1;
+
+    g.inbox.unshift({ t: Date.now(), msg: `Advanced to ${next.name}.` });
     return;
   }
 
-  const next = g.playoffs.rounds[g.playoffs.round]; // next round object
-  next.series = [];
-  for (let i=0;i<winners.length/2;i++){
-    next.series.push(makeSeries(winners[i*2], winners[i*2+1]));
-  }
+  // Finals (round 4)
+  const finalsRound = bracket.rounds[3];
+  const series = finalsRound.finals?.[0];
+  if (series && !series.done) simulateSeries(series);
 
-  g.playoffs.round += 1;
-  g.inbox.unshift({ t: Date.now(), msg: `Advanced to ${next.name}.` });
+  if (series?.done){
+    bracket.championTeamId = series.winner;
+    g.inbox.unshift({ t: Date.now(), msg: `Champion crowned: ${teamById(series.winner).name}.` });
+    startFreeAgency();
+  }
 }
 
 export function startFreeAgency(){
