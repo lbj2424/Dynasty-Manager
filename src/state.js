@@ -9,7 +9,161 @@ import {
   PHASES,
   SALARY_CAP
 } from "./data/constants.js";
-import { clamp, id } from "./utils.js"; // Added id import
+// ... existing imports
+import { clamp } from "./utils.js"; 
+
+// 1. UPDATE newGameState to initialize rotation minutes
+export function newGameState({ userTeamIndex=0 } = {}){
+  const year = 1;
+  const league = generateLeague({ seed: "v1_seed" });
+
+  // Ensure wins/losses/assets exist
+  for (const t of league.teams){
+    t.wins ??= 0; t.losses ??= 0;
+    t.assets = { picks: generateFuturePicks(t.id, year) };
+    t.roster = generateTeamRoster({ teamName: t.name, teamRating: t.rating, year }) || [];
+    t.cap ??= { cap: SALARY_CAP, payroll: 0 };
+    t.cap.cap ??= SALARY_CAP; // Ensure cap is set
+
+    // SETUP ROTATION
+    // Auto-distribute ~205 minutes based on OVR
+    const totalMinutes = 205; // 5 * 41
+    t.roster.sort((a,b) => b.ovr - a.ovr);
+    
+    // Simple distribution: Top 5 get 30m, next 5 get 11m, rest 0?
+    // Let's do a weighted spread for realism
+    let assigned = 0;
+    for (let i=0; i<t.roster.length; i++){
+        const p = t.roster[i];
+        p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
+        p.happiness ??= 70;
+        
+        // Initialize Rotation Object
+        let mins = 0;
+        if (i < 5) mins = 32;        // Starters
+        else if (i < 10) mins = 9;   // Bench
+        else mins = 0;               // Reserves
+        
+        p.rotation = {
+            minutes: mins,
+            isStarter: i < 5
+        };
+        assigned += mins;
+    }
+    // Fix rounding errors to hit exactly 205
+    if (t.roster.length > 0) {
+        t.roster[0].rotation.minutes += (205 - assigned);
+    }
+
+    recalcPayroll(t);
+  }
+
+  const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
+
+  return {
+    meta: { version: "0.3.3", createdAt: Date.now() }, // Bump version
+    activeSaveSlot: null,
+    game: {
+      year,
+      phase: PHASES.REGULAR,
+      week: 1,
+      seasonWeeks: SEASON_WEEKS,
+      schedule,
+      hours: { available: HOURS_PER_WEEK, banked: 0, bankMax: HOURS_BANK_MAX },
+      league,
+      userTeamIndex,
+      scouting: {
+        tab: "NCAA",
+        ncaa: generateNCAAProspects({ year, count: 100, seed: "ncaa" }),
+        intlPool: generateInternationalPool({ year, count: 100, seed: "intl" }),
+        scoutedNCAAIds: [], scoutedIntlIds: [], intlFoundWeekById: {}, intlLocation: null
+      },
+      playoffs: null,
+      offseason: { freeAgents: null, draft: null },
+      inbox: [],
+      history: []
+    }
+  };
+}
+
+// 2. NEW FUNCTION: Release Player
+export function releasePlayer(teamId, playerId){
+    const g = STATE.game;
+    const team = g.league.teams.find(t => t.id === teamId);
+    if (!team) return;
+
+    // Remove from roster
+    const idx = team.roster.findIndex(p => p.id === playerId);
+    if (idx === -1) return;
+
+    // Logic: In a real league, you pay a penalty. 
+    // Here, per request: "Get that cap space back" (Full relief).
+    team.roster.splice(idx, 1);
+    
+    // Recalculate Payroll
+    recalcPayroll(team);
+    
+    // Note: If you cut a player, their minutes are gone.
+    // You might want to auto-rebalance logic here, 
+    // or just let the Depth Chart warn the user they are under 205 mins.
+}
+
+// 3. UPDATE simTeamStats to use Minutes
+function simTeamStats(team){
+  const roster = team.roster || [];
+  
+  // Use assigned minutes directly
+  for (const p of roster){
+    p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
+    p.rotation ??= { minutes: 0, isStarter: false }; // Safety
+
+    const mins = p.rotation.minutes;
+    
+    // If minutes are 0, they don't play
+    if (mins <= 0) continue;
+
+    // Usage Factor: 28 minutes is roughly "1.0" standard usage scaling
+    const usage = mins / 28.0; 
+
+    // Random Variance (some games good, some bad)
+    const gameVar = 0.8 + Math.random() * 0.4;
+
+    // Calculate Stats
+    // Points: Driven by OVR + Usage + Variance
+    // Base: (OVR - 55). 75 OVR = 20 base. * Usage(1.0) = 20ppg.
+    const ptsBase = Math.max(0, (p.ovr - 50));
+    const pts = clamp(ptsBase * 0.6 * usage * gameVar, 0, 60);
+
+    // Rebounds
+    const rebBase = (p.pos==="C"||p.pos==="PF") ? 0.35 : 0.12; 
+    const reb = clamp(ptsBase * rebBase * usage * gameVar * 1.5, 0, 25);
+
+    // Assists
+    const astBase = p.pos==="PG" ? 0.4 : p.pos==="SG" ? 0.2 : 0.1;
+    const ast = clamp(ptsBase * astBase * usage * gameVar * 1.5, 0, 20);
+
+    p.stats.gp += 1;
+    p.stats.pts += pts;
+    p.stats.reb += reb;
+    p.stats.ast += ast;
+  }
+}
+
+// Helper (ensure this is in your file)
+function recalcPayroll(team){
+    team.cap.payroll = Number(team.roster.reduce((sum,p)=> sum + (p.contract?.salary || 0), 0).toFixed(1));
+}
+
+// Ensure generateFuturePicks is available if you didn't paste it from previous turn:
+function generateFuturePicks(teamId, startYear){
+  const picks = [];
+  for (let y = startYear; y < startYear + 4; y++){
+    picks.push({ id: `pick_${teamId}_${y}_1`, originalOwnerId: teamId, year: y, round: 1 });
+    picks.push({ id: `pick_${teamId}_${y}_2`, originalOwnerId: teamId, year: y, round: 2 });
+  }
+  return picks;
+}
+
 
 const KEY_ACTIVE = "dynasty_active_slot";
 const KEY_SAVE_PREFIX = "dynasty_save_";
