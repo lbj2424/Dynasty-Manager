@@ -1,11 +1,17 @@
 import { HomeScreen } from "./ui/screens/home.js";
 import { DashboardScreen } from "./ui/screens/dashboard.js";
 import { ScoutingScreen } from "./ui/screens/scouting.js";
+import { PlayoffsScreen } from "./ui/screens/playoffs.js";
+import { FreeAgencyScreen } from "./ui/screens/freeAgency.js";
+import { DraftScreen } from "./ui/screens/draft.js";
 
 export const routes = {
   "/": HomeScreen,
   "/dashboard": DashboardScreen,
-  "/scouting": ScoutingScreen
+  "/scouting": ScoutingScreen,
+  "/playoffs": PlayoffsScreen,
+  "/free-agency": FreeAgencyScreen,
+  "/draft": DraftScreen
 };
 
 export function mountRouter(appEl, routesMap){
