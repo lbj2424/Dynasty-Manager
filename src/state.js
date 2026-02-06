@@ -270,10 +270,7 @@ export function finalizePlayerAverages(){
     }
   }
 }
-finalizeSeasonAndLogHistory({
-  championTeamId: champion.id,
-  userPlayoffFinish: g.playoffs?.userFinish || "—"
-});
+
 
 // ===== PLAYOFFS + OFFSEASON remain mostly same as your current East/West version =====
 // Keep your existing startPlayoffs and simPlayoffRound from earlier.
