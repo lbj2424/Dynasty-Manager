@@ -5,18 +5,29 @@ export const HOURS_BANK_MAX = 60;
 
 export const DECLARE_THRESHOLD = 75;
 
+export const SALARY_CAP = 120;      // cap in "millions"
+export const ROSTER_MAX = 15;
+
+export const PHASES = {
+  REGULAR: "REGULAR",
+  PLAYOFFS: "PLAYOFFS",
+  FREE_AGENCY: "FREE_AGENCY",
+  DRAFT: "DRAFT"
+};
+
 export const CONTINENTS = [
-  { key:"NA", name:"North America", travelHours: 0, density: 1.00 },
-  { key:"SA", name:"South America", travelHours: 6, density: 0.55 },
-  { key:"EU", name:"Europe",        travelHours: 8, density: 0.80 },
+  { key:"NA", name:"North America", travelHours: 0,  density: 1.00 },
+  { key:"SA", name:"South America", travelHours: 6,  density: 0.55 },
+  { key:"EU", name:"Europe",        travelHours: 8,  density: 0.80 },
   { key:"AF", name:"Africa",        travelHours: 10, density: 0.45 },
   { key:"AS", name:"Asia",          travelHours: 12, density: 0.60 },
   { key:"OC", name:"Oceania",       travelHours: 10, density: 0.35 },
-  { key:"AN", name:"Antarctica",    travelHours: 20, density: 0.02 } // fun easter egg, almost empty
+  { key:"AN", name:"Antarctica",    travelHours: 20, density: 0.02 }
 ];
 
 export const POTENTIAL_GRADES = ["A+","A","B","C","D","F"];
 
+// 32 teams (honoring your request). You can swap these later.
 export const NBA_TEAM_NAMES_32 = [
   "Atlanta Hawks","Boston Celtics","Brooklyn Nets","Charlotte Hornets",
   "Chicago Bulls","Cleveland Cavaliers","Dallas Mavericks","Denver Nuggets",
@@ -26,5 +37,5 @@ export const NBA_TEAM_NAMES_32 = [
   "Oklahoma City Thunder","Orlando Magic","Philadelphia 76ers","Phoenix Suns",
   "Portland Trail Blazers","Sacramento Kings","San Antonio Spurs","Toronto Raptors",
   "Utah Jazz","Washington Wizards",
-  "Seattle Supersonics","Las Vegas Aces (Men)" // placeholders to reach 32 if needed
+  "Seattle Supersonics","Las Vegas Vipers"
 ];
