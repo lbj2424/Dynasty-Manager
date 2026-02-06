@@ -1,3 +1,4 @@
+import { el, card, button, badge } from "../components.js";
 import {
   getState,
   advanceWeek,
@@ -15,7 +16,6 @@ export function DashboardScreen(){
   const root = el("div", {}, []);
 
   const phaseBadge = badge(`Phase: ${g.phase}`);
-
   const topButtons = [];
 
   if (g.phase === PHASES.REGULAR){
@@ -27,17 +27,17 @@ export function DashboardScreen(){
     );
 
     if (g.week === g.seasonWeeks){
-  topButtons.push(
-    button("Start Playoffs", {
-      primary: true,
-      onClick: () => {
-        startPlayoffs();
-        location.hash = "#/playoffs";
-      }
-    })
-  );
-}
-}
+      topButtons.push(
+        button("Start Playoffs", {
+          primary: true,
+          onClick: () => {
+            startPlayoffs();
+            location.hash = "#/playoffs";
+          }
+        })
+      );
+    }
+  }
 
   if (g.phase === PHASES.PLAYOFFS){
     topButtons.push(button("Go to Playoffs", { primary:true, onClick: () => location.hash = "#/playoffs" }));
@@ -49,21 +49,19 @@ export function DashboardScreen(){
     topButtons.push(button("Go to Draft", { primary:true, onClick: () => location.hash = "#/draft" }));
   }
 
- topButtons.push(
-  button("My Team", { onClick: () => location.hash = "#/team" }),
-  button("Standings", { onClick: () => location.hash = "#/standings" }),
-   button("History", { onClick: () => location.hash = "#/history" }),
-
-  button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }),
-  button("Save", {
-    onClick: () => {
-      const slot = getActiveSaveSlot() || "A";
-      saveToSlot(slot);
-      alert(`Saved to Slot ${slot}`);
-    }
-  })
-);
-
+  topButtons.push(
+    button("My Team", { onClick: () => location.hash = "#/team" }),
+    button("Standings", { onClick: () => location.hash = "#/standings" }),
+    button("History", { onClick: () => location.hash = "#/history" }),
+    button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }),
+    button("Save", {
+      onClick: () => {
+        const slot = getActiveSaveSlot() || "A";
+        saveToSlot(slot);
+        alert(`Saved to Slot ${slot}`);
+      }
+    })
+  );
 
   root.appendChild(card("Dashboard", "Regular season → Playoffs → Free Agency → Draft.", [
     el("div", { class:"row" }, [
@@ -77,7 +75,8 @@ export function DashboardScreen(){
     el("div", { class:"sep" }),
     el("div", {}, [
       el("div", { class:"h2" }, "Inbox"),
-      ...(g.inbox.length ? g.inbox.slice(0, 8).map(m => el("div", { class:"p" }, `• ${m.msg}`))
+      ...(g.inbox.length
+        ? g.inbox.slice(0, 8).map(m => el("div", { class:"p" }, `• ${m.msg}`))
         : [el("div", { class:"p" }, "No messages yet.")])
     ])
   ]));
