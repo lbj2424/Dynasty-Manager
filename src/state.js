@@ -70,13 +70,13 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const year = 1;
   const league = generateLeague({ seed: "v1_seed" });
 
-  // Ensure wins/losses/assets exist
   for (const t of league.teams){
     t.wins ??= 0; t.losses ??= 0;
     t.assets = { picks: generateFuturePicks(t.id, year) };
+    // Use new roster gen (which handles Age/Salary correctly now)
     t.roster = generateTeamRoster({ teamName: t.name, teamRating: t.rating, year }) || [];
     t.cap ??= { cap: SALARY_CAP, payroll: 0 };
-    t.cap.cap ??= SALARY_CAP; // Ensure cap is set
+    t.cap.cap ??= SALARY_CAP;
 
     // 1. SETUP ROTATION
     autoDistributeMinutes(t);
@@ -85,28 +85,33 @@ export function newGameState({ userTeamIndex=0 } = {}){
     recalcPayroll(t);
 
     // 3. FORCE CAP COMPLIANCE
-    // If the random generator created a team over the cap, scale their salaries down.
+    // If we are over cap, we scale down, BUT we enforce the 0.5M minimum.
     if (t.cap.payroll > t.cap.cap) {
-        // Target 98% of cap to give a little wiggle room
-        const target = t.cap.cap * 0.98;
-        const scale = target / Math.max(1, t.cap.payroll);
-
-        for (const p of t.roster) {
-            if (p.contract && p.contract.salary) {
-                // Scale salary and ensure minimum of 0.5M
-                p.contract.salary = Number((p.contract.salary * scale).toFixed(2));
-                if (p.contract.salary < 0.5) p.contract.salary = 0.5;
+        let attempts = 0;
+        // Iterative approach: scale down, enforce floor, check again.
+        while (t.cap.payroll > t.cap.cap && attempts < 3) {
+            const target = t.cap.cap * 0.99; // Target slightly under
+            const scale = target / t.cap.payroll;
+            
+            for (const p of t.roster) {
+                // Apply scale
+                let newSal = p.contract.salary * scale;
+                // Enforce Floor (500k)
+                if (newSal < 0.5) newSal = 0.5;
+                p.contract.salary = Number(newSal.toFixed(2));
             }
+            recalcPayroll(t);
+            attempts++;
         }
-        // Recalculate after scaling
-        recalcPayroll(t);
     }
   }
 
+  // ... rest of newGameState (schedule generation, etc) ...
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.3.4", createdAt: Date.now() },
+    meta: { version: "0.3.5", createdAt: Date.now() },
+    // ... rest of state object
     activeSaveSlot: null,
     game: {
       year,
