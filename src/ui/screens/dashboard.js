@@ -1,9 +1,9 @@
-import { el, card, button, badge } from "../components.js";
 import {
   getState,
   advanceWeek,
   saveToSlot,
   getActiveSaveSlot,
+  startPlayoffs
 } from "../../state.js";
 import { formatWeek } from "../../utils.js";
 import { PHASES } from "../../data/constants.js";
