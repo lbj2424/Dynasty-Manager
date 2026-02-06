@@ -78,7 +78,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   }
 
   // schedule: 20 weeks, each team plays 4 games/week ~ 80 games
-  const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS);
+  const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
     meta: { version: "0.3.1", createdAt: Date.now() },
