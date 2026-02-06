@@ -169,6 +169,7 @@ function makePick(d, teamId, prospect, g){
       pos: prospect.pos,
       ovr: prospect.currentOVR,
       potentialGrade: prospect.potentialGrade,
+      rookieYear: g.year,
       happiness: 70,
       dev: { focus: "Overall", points: 7 },
       promisedRole: "Reserve",
