@@ -51,6 +51,7 @@ export function DashboardScreen(){
 
   topButtons.push(
     button("My Team", { onClick: () => location.hash = "#/team" }),
+    button("Trade", { onClick: () => location.hash = "#/trade" }), // <--- ADDED BUTTON
     button("Standings", { onClick: () => location.hash = "#/standings" }),
     button("History", { onClick: () => location.hash = "#/history" }),
     button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }),
