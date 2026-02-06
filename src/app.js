@@ -1,6 +1,6 @@
 import { mountRouter } from "./router.js";
 import { loadActiveOrNull, ensureAppState, setActiveSaveSlot } from "./state.js";
-import { routes } from "./router.js";
+import { router as routes } from "./router.js"; // <--- FIXED: Aliased 'router' to 'routes'
 
 const appEl = document.getElementById("app");
 
