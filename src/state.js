@@ -305,10 +305,9 @@ function bumpHappiness(team, delta){
     p.happiness = clamp((p.happiness ?? 70) + delta, 0, 100);
   }
 }
+// ... existing imports
 
 // -------------------- PLAYOFFS --------------------
-// Minimal, safe initializer so dashboard button works.
-// Your Playoffs screen can simulate rounds however you want.
 export function startPlayoffs(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
@@ -324,20 +323,114 @@ export function startPlayoffs(){
     bestOf: 7,
     eastSeeds: east.map(t => t.id),
     westSeeds: west.map(t => t.id),
-    // you can fill these out in your playoffs sim screen
     championTeamId: null,
-    userFinish: null
+    userFinish: null,
+    rounds: [] // Initialize rounds array
   };
+
+  // Generate Round 1 Matchups immediately
+  generateNextRoundMatchups(g);
 
   g.inbox.unshift({ t: Date.now(), msg: "Playoffs started (Top 8 East/West)." });
 }
 
+export function simPlayoffRound(){
+  const g = STATE.game;
+  if (g.phase !== PHASES.PLAYOFFS) return;
+  
+  const p = g.playoffs;
+  const currentRoundIndex = p.round - 1;
+  
+  // Safety check
+  if (!p.rounds[currentRoundIndex]) return;
+
+  const rObj = p.rounds[currentRoundIndex];
+  const allSeries = [...(rObj.east || []), ...(rObj.west || []), ...(rObj.finals || [])];
+
+  let roundOver = true;
+
+  // Sim games for every series in this round
+  for (const s of allSeries){
+    if (s.done) continue;
+
+    // Sim until someone reaches 4 wins
+    while (s.aWins < 4 && s.bWins < 4){
+        // 50/50 coin flip for prototype (you can add team rating logic here later)
+        if (Math.random() > 0.5) s.aWins++; 
+        else s.bWins++;
+    }
+
+    s.done = true;
+    s.winner = (s.aWins === 4) ? s.a : s.b;
+  }
+
+  // Check if we need to advance to next round
+  if (roundOver) {
+      if (p.round === 4) {
+          // Finals just finished
+          p.championTeamId = allSeries[0].winner;
+          const userTeam = g.league.teams[g.userTeamIndex];
+          finalizeSeasonAndLogHistory({ 
+            championTeamId: p.championTeamId, 
+            userPlayoffFinish: "Playoffs" // Simple placeholder
+          });
+          startFreeAgency(); // Auto-transition to FA
+      } else {
+          // Advance Round
+          p.round++;
+          generateNextRoundMatchups(g);
+      }
+  }
+}
+
+function generateNextRoundMatchups(g){
+    const p = g.playoffs;
+    const rNum = p.round;
+    
+    // Helper to build a series object
+    const makeSeries = (idA, idB) => ({ a: idA, b: idB, aWins:0, bWins:0, done:false, winner:null });
+
+    if (rNum === 1) {
+        // 1v8, 4v5, 3v6, 2v7 (Standard bracket order for next round matching)
+        const pair = (seeds) => [
+            makeSeries(seeds[0], seeds[7]),
+            makeSeries(seeds[3], seeds[4]),
+            makeSeries(seeds[2], seeds[5]),
+            makeSeries(seeds[1], seeds[6])
+        ];
+        p.rounds.push({ name: "Round 1", east: pair(p.eastSeeds), west: pair(p.westSeeds) });
+    } 
+    else if (rNum === 2 || rNum === 3) {
+        const prev = p.rounds[rNum - 2];
+        const nextRound = { name: rNum === 2 ? "Semis" : "Conf. Finals", east: [], west: [] };
+        
+        // Simple logic: Pair adjacent winners (Winner of Series 0 vs Winner of Series 1, etc.)
+        for (const conf of ['east', 'west']) {
+            const winners = prev[conf].map(s => s.winner);
+            for (let i = 0; i < winners.length; i += 2) {
+                nextRound[conf].push(makeSeries(winners[i], winners[i+1]));
+            }
+        }
+        p.rounds.push(nextRound);
+    } 
+    else if (rNum === 4) {
+        // Finals
+        const prev = p.rounds[2]; // Conf finals
+        const eastChamp = prev.east[0].winner;
+        const westChamp = prev.west[0].winner;
+        p.rounds.push({ name: "Finals", finals: [makeSeries(eastChamp, westChamp)] });
+    }
+}
+
 function getConferenceStandings(g, conf){
+  // ... (Keep your existing function) ...
   return (g.league.teams || [])
     .filter(t => t.conference === conf)
     .slice()
     .sort((a,b) => (b.wins - a.wins) || (a.losses - b.losses) || (b.rating - a.rating));
 }
+
+// ... existing code ...
 
 // -------------------- FREE AGENCY --------------------
 export function startFreeAgency(){
