@@ -78,17 +78,35 @@ export function newGameState({ userTeamIndex=0 } = {}){
     t.cap ??= { cap: SALARY_CAP, payroll: 0 };
     t.cap.cap ??= SALARY_CAP; // Ensure cap is set
 
-    // SETUP ROTATION
-    // Auto-distribute ~205 minutes based on OVR
+    // 1. SETUP ROTATION
     autoDistributeMinutes(t);
 
+    // 2. INITIAL PAYROLL
     recalcPayroll(t);
+
+    // 3. FORCE CAP COMPLIANCE
+    // If the random generator created a team over the cap, scale their salaries down.
+    if (t.cap.payroll > t.cap.cap) {
+        // Target 98% of cap to give a little wiggle room
+        const target = t.cap.cap * 0.98;
+        const scale = target / Math.max(1, t.cap.payroll);
+
+        for (const p of t.roster) {
+            if (p.contract && p.contract.salary) {
+                // Scale salary and ensure minimum of 0.5M
+                p.contract.salary = Number((p.contract.salary * scale).toFixed(2));
+                if (p.contract.salary < 0.5) p.contract.salary = 0.5;
+            }
+        }
+        // Recalculate after scaling
+        recalcPayroll(t);
+    }
   }
 
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.3.3", createdAt: Date.now() },
+    meta: { version: "0.3.4", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
