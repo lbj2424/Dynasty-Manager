@@ -50,7 +50,6 @@ export function ensureAppState(loadedOrNull){
         p.happiness ??= 70;
         p.age ??= 24; 
         
-        // Backfill OFF/DEF
         if (!p.off) p.off = p.ovr;
         if (!p.def) p.def = p.ovr;
 
@@ -103,7 +102,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.5.1", createdAt: Date.now() },
+    meta: { version: "0.5.2", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -129,6 +128,13 @@ export function newGameState({ userTeamIndex=0 } = {}){
   };
 }
 
+// -------------------- SAVE UTILS (Auto-Save) --------------------
+
+function autoSave() {
+    const slot = getActiveSaveSlot() || "A";
+    saveToSlot(slot);
+}
+
 // -------------------- FREE AGENCY LOGIC --------------------
 
 export function startFreeAgency(){
@@ -148,6 +154,7 @@ export function startFreeAgency(){
   generateInitialOffers(g);
 
   g.inbox.unshift({ t: Date.now(), msg: `Free Agency started. ${expiringPool.length} players joined from expired contracts.` });
+  autoSave(); // SAVE
 }
 
 function generateInitialOffers(g){
@@ -267,7 +274,6 @@ function processEndSeasonRoster(g){
       const noise = Math.floor(Math.random() * 3) - 1; 
       let totalChange = baseChange + noise;
       
-      // Update Off/Def
       p.off = clamp(p.off + totalChange, 40, 99);
       p.def = clamp(p.def + totalChange, 40, 99);
       p.ovr = Math.round((p.off + p.def) / 2);
@@ -343,6 +349,7 @@ export function negotiateExtension(teamId, playerId){
     p.happiness += 5; 
 
     recalcPayroll(team);
+    autoSave(); // SAVE
     
     return { success:true, msg:`Signed ${p.name} to ${addYears}y extension ($${askAmount}M/yr).` };
 }
@@ -450,6 +457,7 @@ export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
     updateTeamRating(userTeam);
     updateTeamRating(otherTeam);
 
+    autoSave(); // <--- CRITICAL FIX: Auto-save after trade
     return true;
 }
 
@@ -462,6 +470,7 @@ export function releasePlayer(teamId, playerId){
     team.roster.splice(idx, 1);
     recalcPayroll(team);
     updateTeamRating(team);
+    autoSave(); // SAVE
 }
 
 export function setActiveSaveSlot(slot){
@@ -532,6 +541,8 @@ export function advanceWeek(){
     g.week = g.seasonWeeks;
     g.inbox.unshift({ t: Date.now(), msg: "Regular season complete. Start Playoffs." });
   }
+  
+  autoSave(); // <--- CRITICAL FIX: Auto-save each week
 }
 
 function expireIntlFoundProspects(g){
@@ -588,11 +599,9 @@ function simWeekGames(g){
     const B = g.league.teams.find(t => t.id === bId);
     if (!A || !B) continue;
 
-    // 1. Calculate Stats based on OFF/DEF
     const statsA = calcTeamPerformance(A);
     const statsB = calcTeamPerformance(B);
 
-    // 2. Defense Factor
     const defenseFactorA = (statsA.defRating - 75) / 100;
     const defenseFactorB = (statsB.defRating - 75) / 100;
 
@@ -686,6 +695,7 @@ export function startPlayoffs(){
   
   generateNextRoundMatchups(g);
   g.inbox.unshift({ t: Date.now(), msg: "Playoffs started (Top 8 East/West)." });
+  autoSave(); // SAVE
 }
 
 export function simPlayoffRound(){
@@ -738,6 +748,7 @@ export function simPlayoffRound(){
           generateNextRoundMatchups(g);
       }
   }
+  autoSave(); // SAVE
 }
 
 function generateNextRoundMatchups(g){
@@ -812,6 +823,7 @@ export function startDraft(){
   };
 
   g.inbox.unshift({ t: Date.now(), msg: "Draft started (2 rounds)." });
+  autoSave(); // SAVE
 }
 
 function findPickOwner(g, originalOwnerId, year, round){
@@ -863,6 +875,7 @@ export function advanceToNextYear(){
   g.offseason.expiring = []; 
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
+  autoSave(); // SAVE
 }
 
 export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
@@ -907,6 +920,7 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
     awards
   });
   g.inbox.unshift({ t: Date.now(), msg: `Season ${g.year} awards saved to History.` });
+  autoSave(); // SAVE
 }
 
 function computeAwards(g){
