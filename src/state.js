@@ -18,12 +18,11 @@ let STATE = null;
 
 export function getState(){ return STATE; }
 
-// -------------------- INITIALIZATION & MIGRATION --------------------
+// -------------------- INITIALIZATION --------------------
 
 export function ensureAppState(loadedOrNull){
   if (loadedOrNull){
     STATE = loadedOrNull;
-    
     STATE.game.history ??= [];
     STATE.game.retiredPlayers ??= []; 
 
@@ -86,7 +85,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.4.3", createdAt: Date.now() },
+    meta: { version: "0.4.4", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -112,7 +111,109 @@ export function newGameState({ userTeamIndex=0 } = {}){
   };
 }
 
-// -------------------- SEASON END & PROGRESSION --------------------
+// -------------------- FREE AGENCY LOGIC (New) --------------------
+
+export function startFreeAgency(){
+  const g = STATE.game;
+  g.phase = PHASES.FREE_AGENCY;
+  
+  const freshPool = generateFreeAgents({ year: g.year, count: 80, seed: "fa" });
+  const expiringPool = g.offseason.expiring || [];
+  const combinedPool = [...expiringPool, ...freshPool];
+  combinedPool.sort((a,b) => b.ovr - a.ovr);
+
+  g.offseason.freeAgents = {
+    cap: SALARY_CAP,
+    pool: combinedPool
+  };
+
+  // --- NEW: Generate CPU Offers ---
+  generateInitialOffers(g);
+  // -------------------------------
+
+  g.inbox.unshift({ t: Date.now(), msg: `Free Agency started. ${expiringPool.length} players joined from expired contracts.` });
+}
+
+function generateInitialOffers(g){
+    const fa = g.offseason.freeAgents;
+    const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+
+    // Give offers mostly to good players
+    for (const p of fa.pool) {
+        p.offers = []; // Reset offers
+
+        // Determine demand based on OVR
+        let demandChance = 0;
+        if (p.ovr >= 85) demandChance = 0.95;
+        else if (p.ovr >= 80) demandChance = 0.70;
+        else if (p.ovr >= 75) demandChance = 0.40;
+        else if (p.ovr >= 70) demandChance = 0.15;
+        else demandChance = 0.05; // Scrubs rarely get early offers
+
+        if (Math.random() > demandChance) continue;
+
+        // How many teams want him? (1 to 3)
+        const numOffers = Math.floor(Math.random() * 3) + 1;
+        
+        // Shuffle teams to find bidders
+        const shuffled = [...cpuTeams].sort(() => 0.5 - Math.random());
+        
+        for (const t of shuffled) {
+            if (p.offers.length >= numOffers) break;
+
+            const capSpace = t.cap.cap - t.cap.payroll;
+            // CPU Offer Logic:
+            // They offer close to Ask, maybe slightly more or less
+            // Factor: -10% to +10% of ask
+            const offerAmount = p.ask * (0.9 + Math.random() * 0.2);
+            
+            if (capSpace > offerAmount && t.roster.length < 15) {
+                p.offers.push({
+                    teamId: t.id,
+                    teamName: t.name,
+                    salary: Number(offerAmount.toFixed(2)),
+                    years: p.yearsAsk, // Match years ask usually
+                });
+            }
+        }
+    }
+}
+
+export function calculateSignChance(player, offerSalary, offerYears){
+    // Calculate Score for User Offer
+    // Score = Salary * (1 + 0.1 * Years)  -> Players value money + security
+    const userScore = offerSalary * (1 + 0.1 * offerYears);
+
+    // Calculate Score for Player Ask (Baseline)
+    const askScore = player.ask * (1 + 0.1 * player.yearsAsk);
+
+    // Calculate Score for Best CPU Offer
+    let bestCpuScore = 0;
+    for (const off of (player.offers || [])) {
+        const s = off.salary * (1 + 0.1 * off.years);
+        if (s > bestCpuScore) bestCpuScore = s;
+    }
+
+    // The "Target" to beat is the max of Ask or Best Offer
+    const target = Math.max(askScore, bestCpuScore);
+
+    // Probability Formula
+    // Ratio > 1.15 = 100%
+    // Ratio = 1.0 = 50%
+    // Ratio < 0.85 = 0%
+    
+    if (target === 0) return 100; // Should handle edge case, but ask is never 0
+
+    const ratio = userScore / target;
+    
+    // Scale: 0.85 -> 0, 1.0 -> 50, 1.15 -> 100
+    // Linear interpolation
+    let chance = (ratio - 0.85) / (1.15 - 0.85) * 100;
+    
+    return clamp(Math.round(chance), 0, 100);
+}
+
+// -------------------- HELPER FUNCTIONS --------------------
 
 function processEndSeasonRoster(g){
   const userTeamId = g.league.teams[g.userTeamIndex].id;
@@ -136,33 +237,24 @@ function processEndSeasonRoster(g){
           });
       }
 
-      // --- NEW DEVELOPMENT LOGIC ---
       const age = p.age || 20;
       const minutes = p.rotation?.minutes || 0; 
       
       let baseChange = 0;
-
-      // 1. Age Curve
       if (age <= 22) baseChange = 2;       
       else if (age <= 25) baseChange = 1;  
       else if (age <= 29) baseChange = 0;  
       else if (age <= 32) baseChange = -1; 
       else baseChange = -3;                
 
-      // 2. Potential Velocity (Talent Factor)
-      // A+ and A players now effectively get +1 speed
       if (p.potentialGrade === "A+" || p.potentialGrade === "A") baseChange += 1;
-      // F players learn slower
       if (p.potentialGrade === "F") baseChange -= 1;
 
-      // 3. Playtime / XP
       if (age < 26) {
-          // Lowered threshold to 18 mins (so 20 min players get credit)
           if (minutes >= 18) baseChange += 1; 
           else if (minutes < 8) baseChange -= 1; 
       }
 
-      // 4. Cap Logic (Ceiling)
       const caps = { "A+":99, "A":92, "B":84, "C":77, "D":70, "F":60 };
       const softCap = caps[p.potentialGrade] || 75;
       
@@ -171,22 +263,19 @@ function processEndSeasonRoster(g){
           else baseChange -= 1; 
       }
 
-      // 5. Random Variance
       const roll = Math.random();
       if (roll < 0.05) {
-          baseChange += 3; // Breakout
+          baseChange += 3;
           if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`BREAKOUT: ${p.name} (+${baseChange + 1})!` });
       } else if (roll < 0.10) {
-          baseChange -= 2; // Regression
+          baseChange -= 2;
       }
 
-      const noise = Math.floor(Math.random() * 3) - 1; // -1, 0, 1
+      const noise = Math.floor(Math.random() * 3) - 1; 
       let totalChange = baseChange + noise;
-      
       p.ovr = clamp(p.ovr + totalChange, 40, 99);
       p.age = age + 1;
 
-      // --- Retirement & Contract Logic ---
       let retireChance = 0;
       if (p.age >= 34) retireChance = 0.10;
       if (p.age >= 36) retireChance = 0.30;
@@ -215,7 +304,8 @@ function processEndSeasonRoster(g){
             yearsAsk: Math.max(1, Math.min(4, Math.floor(Math.random() * 4) + 1)),
             signedByTeamId: null,
             contract: null,
-            careerStats: p.careerStats 
+            careerStats: p.careerStats,
+            offers: [] // Init offers
         });
       }
     }
@@ -225,8 +315,6 @@ function processEndSeasonRoster(g){
     recalcPayroll(t);
   }
 }
-
-// -------------------- NEW FEATURES --------------------
 
 export function negotiateExtension(teamId, playerId){
     const g = STATE.game;
@@ -294,8 +382,6 @@ function simCpuTrades(g){
         msg: `TRADE: ${t1.name} sent ${p1.name} to ${t2.name} for ${p2.name}.` 
     });
 }
-
-// -------------------- HELPER FUNCTIONS --------------------
 
 function autoDistributeMinutes(team){
     team.roster.forEach(p => { p.rotation = { minutes: 0, isStarter: false }; });
@@ -376,8 +462,6 @@ export function releasePlayer(teamId, playerId){
     team.roster.splice(idx, 1);
     recalcPayroll(team);
 }
-
-// -------------------- SAVES & TIME --------------------
 
 export function setActiveSaveSlot(slot){
   STATE.activeSaveSlot = slot;
@@ -467,8 +551,6 @@ function expireIntlFoundProspects(g){
   g.scouting.intlPool = keep;
   g.scouting.intlFoundWeekById = found;
 }
-
-// -------------------- SIMULATION --------------------
 
 function generateWeeklySchedule(teamIds, weeks){
   const schedule = [];
@@ -571,8 +653,6 @@ function bumpHappiness(team, delta){
   }
 }
 
-// -------------------- PLAYOFFS & SEASON END --------------------
-
 export function startPlayoffs(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
@@ -668,24 +748,6 @@ function getConferenceStandings(g, conf){
     .sort((a,b) => (b.wins - a.wins) || (a.losses - b.losses) || (b.rating - a.rating));
 }
 
-// -------------------- FREE AGENCY & DRAFT --------------------
-
-export function startFreeAgency(){
-  const g = STATE.game;
-  g.phase = PHASES.FREE_AGENCY;
-  
-  const freshPool = generateFreeAgents({ year: g.year, count: 80, seed: "fa" });
-  const expiringPool = g.offseason.expiring || [];
-  const combinedPool = [...expiringPool, ...freshPool];
-  combinedPool.sort((a,b) => b.ovr - a.ovr);
-
-  g.offseason.freeAgents = {
-    cap: SALARY_CAP,
-    pool: combinedPool
-  };
-  g.inbox.unshift({ t: Date.now(), msg: `Free Agency started. ${expiringPool.length} players joined from expired contracts.` });
-}
-
 export function startDraft(){
   const g = STATE.game;
   g.phase = PHASES.DRAFT;
@@ -733,8 +795,6 @@ function findPickOwner(g, originalOwnerId, year, round){
     return g.league.teams.find(t => t.id === originalOwnerId);
 }
 
-// -------------------- NEXT YEAR & HISTORY --------------------
-
 export function advanceToNextYear(){
   const g = STATE.game;
   g.year += 1;
@@ -776,44 +836,36 @@ export function advanceToNextYear(){
 export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
   const g = STATE.game;
   
-  // --- PROCESS ROSTER UPDATES (Age up, Contracts down, Collect Expiring) ---
   processEndSeasonRoster(g);
-  // -------------------------------------------------------------------------
 
   g.history ??= [];
   const userTeam = g.league.teams[g.userTeamIndex];
   const championTeam = g.league.teams.find(t => t.id === championTeamId);
   const awards = computeAwards(g);
 
-  // --- NEW: Calculate User Playoff Result ---
   let userFinish = "Didn't Make";
   const userTeamId = userTeam.id;
   const p = g.playoffs;
 
-  // 1. Did they make it?
   if (p.eastSeeds.includes(userTeamId) || p.westSeeds.includes(userTeamId)) {
-      userFinish = "Round 1"; // Made it at least here
-      // 2. Scan rounds to see how far they got
+      userFinish = "Round 1"; 
       for (const r of p.rounds) {
           const allSeries = [...(r.east||[]), ...(r.west||[]), ...(r.finals||[])];
           const userSeries = allSeries.find(s => s.a === userTeamId || s.b === userTeamId);
           
           if (userSeries) {
               if (userSeries.winner === userTeamId) {
-                  // Won this round, so they reached the NEXT round
                   if (r.name === "Round 1") userFinish = "Semis";
                   else if (r.name === "Semis") userFinish = "Conf. Finals";
                   else if (r.name === "Conf. Finals") userFinish = "Finals";
                   else if (r.name === "Finals") userFinish = "Champion";
               } else {
-                  // Lost in this round, so userFinish remains the round name (e.g. "Finals")
                   userFinish = r.name;
                   break; 
               }
           }
       }
   }
-  // ------------------------------------------
 
   g.history.push({
     year: g.year,
@@ -853,13 +905,11 @@ function computeAwards(g){
     return bigBonus + ovr * 1.0 + teamDefProxy;
   });
   
-  // --- FIX ROY ---
   let rookies = played.filter(x => x.player.rookieYear === g.year);
   if (rookies.length === 0) {
       rookies = all.filter(x => x.player.rookieYear === g.year);
   }
   const roy = topBy(rookies, x => x.ptsPg * 1.0 + x.astPg * 0.45 + (x.player.ovr || 70) * 0.2);
-  // --------------
 
   return {
     MVP: packAward(mvp),
