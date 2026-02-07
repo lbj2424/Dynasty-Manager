@@ -63,7 +63,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
     t.cap ??= { cap: SALARY_CAP, payroll: 0 };
     t.cap.cap ??= SALARY_CAP;
 
-    // 1. SETUP ROTATION
+    // 1. SETUP ROTATION (Validates positions too)
     autoDistributeMinutes(t);
 
     // 2. INITIAL PAYROLL
@@ -89,7 +89,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.3.8", createdAt: Date.now() },
+    meta: { version: "0.3.9", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -114,7 +114,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   };
 }
 
-// -------------------- SEASON END PROCESS --------------------
+// -------------------- REALISTIC SEASON END & PROGRESSION --------------------
 
 function processEndSeasonRoster(g){
   const userTeamId = g.league.teams[g.userTeamIndex].id;
@@ -124,33 +124,74 @@ function processEndSeasonRoster(g){
     const nextRoster = [];
     
     for(const p of t.roster){
-      // 1. AGE UP
-      p.age = (p.age || 20) + 1;
-
-      // 2. DEVELOPMENT / REGRESSION
-      let change = 0;
-      if (p.age <= 23) change = Math.floor(Math.random() * 3) + 1; 
-      else if (p.age <= 27) change = Math.floor(Math.random() * 3) - 1; 
-      else if (p.age >= 30) change = Math.floor(Math.random() * 3) * -1; 
+      // --- 1. REALISTIC GROWTH CALCULATION ---
+      const age = p.age || 20;
+      const minutes = p.rotation?.minutes || 0; // Minutes allocated this season
       
-      if (p.potentialGrade === "A" || p.potentialGrade === "A+") change += 1;
-      if (p.potentialGrade === "F") change -= 1;
+      let baseChange = 0;
 
-      p.ovr = clamp(p.ovr + change, 40, 99);
+      // A. Age Curve
+      if (age <= 22) baseChange = 2;       // Young: naturally grow
+      else if (age <= 25) baseChange = 1;  // Developing
+      else if (age <= 29) baseChange = 0;  // Prime (plateau)
+      else if (age <= 32) baseChange = -1; // Slow Decline
+      else baseChange = -3;                // Cliff (Rapid Decline)
 
-      // 3. CONTRACT DECREMENT
+      // B. Potential Cap ("Soft Ceiling")
+      // Players struggle to grow past their potential grade
+      const caps = { "A+":99, "A":92, "B":84, "C":77, "D":70, "F":60 };
+      const softCap = caps[p.potentialGrade] || 75;
+      
+      if (p.ovr >= softCap) {
+          // If you've hit your ceiling, growth halts or regression starts earlier
+          if (baseChange > 0) baseChange = 0; 
+          else baseChange -= 1; // Decline faster if you are "playing above your level"
+      }
+
+      // C. Playtime / XP Factor (Crucial for Young Players)
+      if (age < 26) {
+          if (minutes >= 25) baseChange += 1; // Starter minutes = Bonus Growth
+          else if (minutes < 10) baseChange -= 1; // Bench warmer = Stunted Development
+      }
+
+      // D. Variance & Breakouts (The "Story" Factor)
+      const roll = Math.random();
+      if (roll < 0.05) {
+          // 5% Chance of BREAKOUT (Huge jump)
+          baseChange += 3;
+          if(t.id === userTeamId) {
+              g.inbox.unshift({ t:Date.now(), msg:`BREAKOUT: ${p.name} had a massive offseason (+${baseChange + 1})!` });
+          }
+      } else if (roll < 0.10) {
+          // 5% Chance of REGRESSION (Bust/Injury)
+          baseChange -= 2;
+      }
+
+      // E. Apply Change
+      // Add small noise (-1 to 1) so it's not robotic
+      const noise = Math.floor(Math.random() * 3) - 1; 
+      let totalChange = baseChange + noise;
+
+      // Safety clamps
+      const newOvr = clamp(p.ovr + totalChange, 40, 99);
+      p.ovr = newOvr;
+      
+      // Update Age
+      p.age = age + 1;
+
+      // --- 2. CONTRACT LOGIC ---
       p.contract.years -= 1;
 
-      // 4. EXPIRING LOGIC
       if(p.contract.years > 0){
         nextRoster.push(p);
       } else {
-        // Player Contract Expired
+        // Expiring
         if(t.id === userTeamId){
            g.inbox.unshift({ t:Date.now(), msg:`${p.name}'s contract expired. They entered Free Agency.` });
         }
         
-        // Prepare player for Free Agency
+        // Convert to Free Agent
+        // Recalculate 'Fair Value' based on NEW age and NEW ovr
         const fairValue = calculateSalary(p.ovr, p.age);
         const greed = 0.9 + Math.random() * 0.3; 
         
@@ -175,8 +216,10 @@ function processEndSeasonRoster(g){
     }
     
     t.roster = nextRoster;
-    recalcPayroll(t);
+    
+    // CPU Logic: Re-balance lineup after players leave/regress
     autoDistributeMinutes(t);
+    recalcPayroll(t);
   }
 }
 
@@ -407,17 +450,14 @@ function simWeekGames(g){
     const B = g.league.teams.find(t => t.id === bId);
     if (!A || !B) continue;
 
-    // 1. Simulate Stats & Get Total Points
     let ptsA = simTeamStats(A);
     let ptsB = simTeamStats(B);
 
-    // 2. Handle Overtime (prevent ties)
     while (ptsA === ptsB) {
         ptsA += Math.floor(Math.random() * 6);
         ptsB += Math.floor(Math.random() * 6);
     }
 
-    // 3. Determine Winner based on Score
     const aWin = ptsA > ptsB;
 
     if (aWin){ A.wins += 1; B.losses += 1; }
@@ -426,7 +466,6 @@ function simWeekGames(g){
     bumpHappiness(A, aWin ? +1 : -1);
     bumpHappiness(B, aWin ? -1 : +1);
 
-    // 4. Log User Game Result
     if (A.id === userTeamId || B.id === userTeamId) {
         const userWon = (A.id === userTeamId && aWin) || (B.id === userTeamId && !aWin);
         const opponent = A.id === userTeamId ? B : A;
