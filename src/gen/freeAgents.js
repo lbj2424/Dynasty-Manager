@@ -21,8 +21,19 @@ export function generateFreeAgents({ year=1, count=80, seed="fa" } = {}){
 
   for (let i=0;i<count;i++){
     const grade = rollGrade(r);
-    const ovr = clamp(Math.floor(60 + r()*26), 60, 90); 
+    const baseOvr = clamp(Math.floor(60 + r()*26), 60, 90); 
     
+    // Archetype Split
+    const typeRoll = r();
+    let off = baseOvr; 
+    let def = baseOvr;
+    if (typeRoll < 0.35) { off += 5; def -= 5; } // Scorer
+    else if (typeRoll < 0.70) { off -= 5; def += 5; } // Defender
+    
+    off = clamp(off, 40, 99);
+    def = clamp(def, 40, 99);
+    const finalOvr = Math.round((off + def)/2);
+
     const rand = r();
     let age = 24;
     if (rand < 0.1) age = 20 + Math.floor(r()*3);
@@ -30,7 +41,7 @@ export function generateFreeAgents({ year=1, count=80, seed="fa" } = {}){
     else if (rand < 0.9) age = 30 + Math.floor(r()*5); 
     else age = 35 + Math.floor(r()*5);
 
-    let ask = calculateSalary(ovr, age);
+    let ask = calculateSalary(finalOvr, age);
     const greed = 0.9 + r() * 0.2; 
     ask = Number((ask * greed).toFixed(2));
 
@@ -38,7 +49,9 @@ export function generateFreeAgents({ year=1, count=80, seed="fa" } = {}){
       id: id("fa", r),
       name: `${pick(FIRST, r)} ${pick(LAST, r)}`,
       pos: pick(POS, r),
-      ovr,
+      ovr: finalOvr,
+      off, // New
+      def, // New
       age,
       potentialGrade: grade,
       ask,
@@ -48,7 +61,7 @@ export function generateFreeAgents({ year=1, count=80, seed="fa" } = {}){
       signedByTeamId: null,
       promisedRole: null,
       contract: null,
-      careerStats: [] // Added History
+      careerStats: []
     });
   }
 
