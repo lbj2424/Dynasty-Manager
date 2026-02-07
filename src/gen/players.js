@@ -24,7 +24,6 @@ export function generateTeamRoster({ teamName, teamRating, year=1, seed="roster"
   const quality = clamp((teamRating - 60) / 35, 0, 1);
 
   const genPlayer = (targetPos, minOvr, maxOvr) => {
-      // Skew OVR slightly towards middle of range
       const ovr = clamp(Math.floor(minOvr + r()*(maxOvr - minOvr + 1)), 60, 99);
       
       const rand = r();
@@ -41,10 +40,17 @@ export function generateTeamRoster({ teamName, teamRating, year=1, seed="roster"
 
       const salary = calculateSalary(ovr, age);
 
+      // --- ROY FIX: If Year 1 and young, mark as Rookie ---
+      let rookieYear = null;
+      if (year === 1 && age <= 21 && r() < 0.3) {
+          rookieYear = 1;
+      }
+      // ----------------------------------------------------
+
       return {
           id: id("pl", r),
           name: `${pick(FIRST, r)} ${pick(LAST, r)}`,
-          pos: targetPos, // FORCE POSITION
+          pos: targetPos,
           age,
           ovr,
           potentialGrade: pot,
@@ -52,20 +58,17 @@ export function generateTeamRoster({ teamName, teamRating, year=1, seed="roster"
           dev: { focus: "Balanced", points: 0 },
           contract: { years: 1 + Math.floor(r()*4), salary },
           stats: { gp:0, pts:0, reb:0, ast:0 },
-          rotation: { minutes: 0, isStarter: false }
+          rotation: { minutes: 0, isStarter: false },
+          careerStats: [], // Ensure history exists
+          rookieYear 
       };
   };
 
-  // --- POSITIONAL BALANCE ENFORCEMENT ---
-  // Ensure at least 2 players for every position (10 players total)
+  // --- POSITIONAL BALANCE ---
   for (const pos of POS) {
-      // 1 Starter caliber
       roster.push(genPlayer(pos, 75 + 10*quality, 85 + 10*quality));
-      // 1 Bench caliber
       roster.push(genPlayer(pos, 65 + 5*quality, 74 + 5*quality));
   }
-
-  // Fill remaining 5 spots with random positions/quality
   for(let i=0; i<5; i++) {
       const pos = pick(POS, r);
       roster.push(genPlayer(pos, 60, 72));
