@@ -1,4 +1,4 @@
-import { el, card, button, badge } from "../components.js";
+import { el, card, button, badge, showPlayerModal } from "../components.js";
 import { getState, advanceToNextYear } from "../../state.js";
 import { PHASES } from "../../data/constants.js";
 import { clamp } from "../../utils.js";
@@ -18,7 +18,6 @@ export function DraftScreen(){
 
   const d = g.offseason.draft;
 
-  // --- FIX: Check if draft is done before rendering the board ---
   if (d.done) {
     root.appendChild(card("Draft Complete", "All rounds finished.", [
       el("div", { class:"p" }, "Review the picks below, then advance to the next season.")
@@ -26,18 +25,14 @@ export function DraftScreen(){
     root.appendChild(renderDrafted(d, g));
     return root;
   }
-  // -------------------------------------------------------------
 
   const teamById = (id) => g.league.teams.find(t => t.id === id);
-
-  // safety for old saves
   g.scouting.scoutedNCAAIds ??= [];
   g.scouting.scoutedIntlIds ??= [];
 
   const pickNumberOverall = (d.round - 1) * 32 + (d.pickIndex + 1);
   const onClockTeamId = d.orderTeamIds[d.pickIndex];
   const onClockTeam = teamById(onClockTeamId);
-
   const userTeam = g.league.teams[g.userTeamIndex];
   const userOnClock = onClockTeamId === userTeam.id;
 
@@ -51,7 +46,7 @@ export function DraftScreen(){
     ].filter(Boolean)),
     el("div", { class:"sep" }),
     userOnClock
-      ? el("div", { class:"p" }, "Choose a player. OVR/Potential only show for players you scouted.")
+      ? el("div", { class:"p" }, "Choose a player.")
       : button("Sim CPU Pick", {
           primary: true,
           onClick: () => {
@@ -69,13 +64,27 @@ export function DraftScreen(){
 
 function renderBoard(d, g, userOnClock, onClockTeamId){
   const scoutedSet = makeScoutedSet(g);
+  
+  // 1. Get ALL declared players
+  const allAvailable = d.declaredProspects.filter(p => !p._drafted);
 
-  // show more than 60 so late 2nd feels real
-  const available = d.declaredProspects.filter(p => !p._drafted).slice(0, 90);
+  // 2. Separate into "Top Unscouted" and "All Scouted"
+  // Show Top 60 generally available
+  const topGeneral = allAvailable.slice(0, 60);
+  
+  // Also include ANY player found in scoutedSet, regardless of rank
+  const scoutedList = allAvailable.filter(p => scoutedSet.has(p.id));
+  
+  // Combine unique
+  const displaySet = new Set([...topGeneral, ...scoutedList]);
+  const displayList = Array.from(displaySet).sort((a,b) => b.currentOVR - a.currentOVR);
 
-  const rows = available.map(p => {
+  const rows = displayList.map(p => {
     const youKnow = scoutedSet.has(p.id);
 
+    // If I didn't scout them, and they are INTL, I probably shouldn't see full details?
+    // Game logic: declared = visible.
+    
     const pickBtn = button("Draft", {
       small: true,
       primary: userOnClock,
@@ -85,27 +94,33 @@ function renderBoard(d, g, userOnClock, onClockTeamId){
         window.dispatchEvent(new HashChangeEvent("hashchange"));
       }
     });
+    
+    // Clickable Name
+    const nameLink = el("span", { 
+        style: "cursor:pointer; text-decoration:underline; color:var(--accent);",
+        onclick: () => showPlayerModal(p)
+    }, p.name);
 
     return el("tr", {}, [
-      el("td", {}, p.name),
+      el("td", {}, nameLink),
       el("td", {}, p.pos),
       el("td", {}, youKnow ? String(p.currentOVR) : "Unknown"),
       el("td", {}, youKnow ? p.potentialGrade : "Unknown"),
-      el("td", {}, p.pool === "NCAA" ? "NCAA" : (p.continentName || "INTL")),
+      el("td", {}, p.pool === "NCAA" ? p.college : (p.continentName || "INTL")),
       el("td", {}, youKnow ? "Yes" : "No"),
       el("td", {}, pickBtn)
     ]);
   });
 
-  return card("Draft Board", "Declared prospects only. OVR/Pot only show if you scouted them.", [
-    el("div", { class:"p" }, `Scouted prospects visible: ${makeScoutedSet(g).size}`),
+  return card("Draft Board", "Showing Top 60 + All Scouted Players.", [
+    el("div", { class:"p" }, `Scouted prospects visible: ${scoutedList.length}`),
     el("table", { class:"table" }, [
       el("thead", {}, el("tr", {}, [
         el("th", {}, "Player"),
         el("th", {}, "Pos"),
         el("th", {}, "OVR"),
         el("th", {}, "Pot"),
-        el("th", {}, "Source"),
+        el("th", {}, "School/Country"),
         el("th", {}, "Scouted"),
         el("th", {}, "Action")
       ])),
@@ -170,7 +185,6 @@ function makePick(d, teamId, prospect, g){
     prospect
   });
 
-  // add to team roster as rookie
   const team = g.league.teams.find(t => t.id === teamId);
   if (team){
     const rookieSalary = round === 1 ? 4.0 : 1.5;
@@ -179,13 +193,16 @@ function makePick(d, teamId, prospect, g){
       name: prospect.name,
       pos: prospect.pos,
       ovr: prospect.currentOVR,
+      age: prospect.age, // Pass age
       potentialGrade: prospect.potentialGrade,
-      rookieYear: g.year,
+      rookieYear: g.year, // Mark rookie year
       happiness: 70,
       dev: { focus: "Overall", points: 7 },
       promisedRole: "Reserve",
       contract: { years: 2, salary: rookieSalary },
-      stats: { gp:0, pts:0, reb:0, ast:0 }
+      stats: { gp:0, pts:0, reb:0, ast:0 },
+      rotation: { minutes: 0, isStarter: false },
+      careerStats: [] // Init history
     });
     team.cap.payroll = Number((team.cap.payroll + rookieSalary).toFixed(1));
   }
@@ -193,33 +210,47 @@ function makePick(d, teamId, prospect, g){
   advancePickCursor(d);
 }
 
-// ---------- CPU PICK: weighted randomness ----------
 function cpuPickWeighted(d, teamId, g){
-  if (d.done) return; // safety
+  if (d.done) return; 
   
-  const available = d.declaredProspects.filter(p => !p._drafted);
+  // EXCLUSIVITY LOGIC:
+  // If a player is INTL and in the user's scoutedIntlIds, the CPU should ignore them 
+  // (unless CPU logic implies they "found" them too, but user asked for exclusivity).
+  const scoutedSet = makeScoutedSet(g);
+  
+  const available = d.declaredProspects.filter(p => {
+      if (p._drafted) return false;
+      
+      // If Intl and Scouted by User -> Hidden from CPU?
+      if (p.pool === "INTL" && scoutedSet.has(p.id)) {
+          return false; // Skip this player, they are a "Hidden Gem" for user
+      }
+      return true;
+  });
+
   if (!available.length) {
-    d.done = true;
+    // If only hidden gems remain, CPU skips or draft ends? 
+    // Just force draft end or pick random unsought guy? 
+    // Fallback: Pick ANY available if list empty (CPU finds them eventually)
+    const trulyAny = d.declaredProspects.filter(p => !p._drafted);
+    if (!trulyAny.length) {
+        d.done = true;
+        return;
+    }
+    // Pick from trulyAny if strict list is empty
+    makePick(d, teamId, trulyAny[0], g);
     return;
   }
 
-  // sort by OVR then take a "top tier" window that grows later in the draft
   available.sort((a,b) => b.currentOVR - a.currentOVR);
 
-  const overallPick = (d.round - 1) * 32 + (d.pickIndex + 1); // 1..64
-  const tierSize = clamp(
-    8 + Math.floor(overallPick / 8), // early ~8-12, later ~12-16
-    8,
-    18
-  );
-
+  const overallPick = (d.round - 1) * 32 + (d.pickIndex + 1); 
+  const tierSize = clamp(8 + Math.floor(overallPick / 8), 8, 18);
   const tier = available.slice(0, tierSize);
 
-  // weights favor the top but allow surprises
-  // idx 0 gets biggest weight, idx increases weight falls
   const weights = tier.map((p, i) => {
     const base = 1 / Math.pow(i + 1, 1.25);
-    const potBump = potentialBump(p.potentialGrade); // higher upside slightly more appealing
+    const potBump = potentialBump(p.potentialGrade); 
     return base * potBump;
   });
 
@@ -229,12 +260,7 @@ function cpuPickWeighted(d, teamId, g){
 
 function potentialBump(grade){
   return ({
-    "A+": 1.12,
-    "A":  1.08,
-    "B":  1.04,
-    "C":  1.00,
-    "D":  0.98,
-    "F":  0.96
+    "A+": 1.12, "A": 1.08, "B": 1.04, "C": 1.00, "D": 0.98, "F": 0.96
   })[grade] ?? 1.0;
 }
 
