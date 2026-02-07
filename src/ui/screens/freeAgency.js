@@ -1,5 +1,5 @@
 import { el, card, button, badge, showPlayerModal } from "../components.js";
-import { getState, startDraft, calculateSignChance } from "../../state.js";
+import { getState, startDraft, calculateSignChance, saveToSlot, getActiveSaveSlot } from "../../state.js"; // Added Save imports
 import { PHASES } from "../../data/constants.js";
 
 export function FreeAgencyScreen(){
@@ -114,7 +114,6 @@ export function FreeAgencyScreen(){
 }
 
 function showNegotiationModal(p, team, g, onClose){
-    // Internal state for the modal
     let offerSalary = p.ask;
     let offerYears = p.yearsAsk;
     
@@ -127,20 +126,17 @@ function showNegotiationModal(p, team, g, onClose){
     const render = () => {
         content.innerHTML = "";
         
-        // 1. Header
         content.appendChild(el("div", { class:"spread" }, [
             el("div", { class:"h2" }, `Sign ${p.name}`),
             button("Close", { small:true, onClick: () => { document.body.removeChild(overlay); onClose(); } })
         ]));
         
-        // 2. Info
         content.appendChild(el("div", { class:"p" }, [
             el("div", {}, `Ask: $${p.ask}M for ${p.yearsAsk} years`),
             el("div", {}, `Cap Space: ${(team.cap.cap - team.cap.payroll).toFixed(2)}M`)
         ]));
         content.appendChild(el("div", { class:"sep" }));
 
-        // 3. Competing Offers
         if (p.offers && p.offers.length > 0) {
             content.appendChild(el("div", { class:"h2", style:"font-size:1em;" }, "Competing Offers:"));
             p.offers.forEach(o => {
@@ -153,7 +149,6 @@ function showNegotiationModal(p, team, g, onClose){
         }
         content.appendChild(el("div", { class:"sep" }));
 
-        // 4. Input Form
         const chance = calculateSignChance(p, offerSalary, offerYears);
         const color = chance > 80 ? "var(--good)" : chance > 40 ? "var(--warn)" : "var(--bad)";
 
@@ -175,7 +170,6 @@ function showNegotiationModal(p, team, g, onClose){
             yearInput
         ]));
 
-        // 5. Probability Bar
         content.appendChild(el("div", { class:"p", style:`font-weight:bold; color:${color}; text-align:center; margin:10px 0;` }, 
             `Signing Probability: ${chance}%`
         ));
@@ -183,7 +177,6 @@ function showNegotiationModal(p, team, g, onClose){
             el("div", { class:"barFill", style:`width:${chance}%; background:${color}` })
         ]));
 
-        // 6. Action
         const canAfford = (team.cap.cap - team.cap.payroll) >= offerSalary;
         
         content.appendChild(button("Submit Offer", {
@@ -193,25 +186,17 @@ function showNegotiationModal(p, team, g, onClose){
             onClick: () => {
                 const roll = Math.random() * 100;
                 if (roll <= chance) {
-                    // Success!
                     alert(`Success! ${p.name} accepted your offer.`);
                     signPlayer(p, team.id, offerSalary, offerYears);
                     document.body.removeChild(overlay);
                     onClose();
                 } else {
-                    // Fail -> Player signs with best CPU offer (or vanishes if none, simplified to staying available but rejecting user for now? 
-                    // No, prompt said "player signs immediately". If user loses, they lose.)
-                    
-                    // Find best CPU offer
                     if (p.offers && p.offers.length > 0) {
                         p.offers.sort((a,b) => (b.salary * (1+0.1*b.years)) - (a.salary * (1+0.1*a.years)));
                         const best = p.offers[0];
                         alert(`Offer Rejected! ${p.name} signed with ${best.teamName} instead.`);
                         signPlayer(p, best.teamId, best.salary, best.years);
                     } else {
-                        // Edge case: No offers but rejected user?
-                        // Maybe they just stay in pool but refuse to talk to YOU again?
-                        // For simplicity, let's say they stay unsigned but you can try again (maybe with penalty logic later).
                         alert("Offer Rejected. They think they can do better.");
                     }
                     document.body.removeChild(overlay);
@@ -226,6 +211,7 @@ function showNegotiationModal(p, team, g, onClose){
     document.body.appendChild(overlay);
 }
 
+// --- FIX: Properly initialize player stats/rotation & SAVE game ---
 function signPlayer(p, teamId, salary, years){
     const team = getState().game.league.teams.find(t => t.id === teamId);
     if (!team) return;
@@ -233,8 +219,19 @@ function signPlayer(p, teamId, salary, years){
     p.signedByTeamId = teamId;
     p.contract = { years, salary };
     
+    // 1. Initialize stats (Fixes Team Screen crash)
+    p.stats = { gp:0, pts:0, reb:0, ast:0 };
+    // 2. Initialize rotation (Fixes Team Screen crash)
+    p.rotation = { minutes: 0, isStarter: false };
+    // 3. Ensure happiness
+    p.happiness ??= 70;
+
     team.roster.push(p);
     team.cap.payroll = Number(team.roster.reduce((sum,x)=> sum + (x.contract?.salary || 0), 0).toFixed(1));
+
+    // 4. SAVE (Fixes reload issue)
+    const slot = getActiveSaveSlot() || "A";
+    saveToSlot(slot);
 }
 
 function simCpuFreeAgency(g){
