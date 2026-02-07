@@ -1,104 +1,65 @@
-import { rng, seedFromString, pick, clamp, id } from "../utils.js";
-import { POTENTIAL_GRADES, CONTINENTS } from "../data/constants.js";
+import { rng, seedFromString, pick, id, clamp } from "../utils.js";
 
 const FIRST = ["Jalen","Marcus","Isaiah","Noah","Liam","Ethan","Mason","Aiden","Kai","Leo","Mateo","Jayden","Caleb","Owen","Carter","Julian","Jordan","Darius","Malik","Trey","Dillon","DeAndre","Aaron","Tyrese"];
 const LAST  = ["Cruz","Johnson","Smith","Brown","Williams","Jones","Garcia","Miller","Davis","Rodriguez","Martinez","Hernandez","Lopez","Gonzalez","Wilson","Anderson","Thomas","Taylor","Moore","Jackson","Martin","Lee","Perez"];
-
 const POS = ["PG","SG","SF","PF","C"];
+const COLLEGES = ["Duke","unc","Kentucky","Kansas","Villanova","Gonzaga","UCLA","Arizona","Michigan","Texas","Florida","Virginia","Oregon","Ohio St","Alabama","Auburn","Tennessee","Houston","Baylor","Purdue"];
+const COUNTRIES = ["France","Spain","Serbia","Slovenia","Australia","Canada","Germany","Lithuania","Turkey","Greece","Italy","Brazil","Argentina","Nigeria","China","Japan"];
 
-function rollPotentialGrade(r){
-  // Rare A+, more A, lots of B/C
+function rollPot(r){
   const x = r();
-  if (x < 0.02) return "A+";
-  if (x < 0.08) return "A";
-  if (x < 0.38) return "B";
+  if (x < 0.05) return "A+";
+  if (x < 0.15) return "A";
+  if (x < 0.40) return "B";
   if (x < 0.75) return "C";
-  if (x < 0.93) return "D";
+  if (x < 0.90) return "D";
   return "F";
 }
 
-function ceilingFromGrade(grade, currentOVR, r){
-  // Hidden ceiling number, but grade is visible. F caps at current.
-  const base = {
-    "A+": [92, 99],
-    "A":  [88, 94],
-    "B":  [84, 90],
-    "C":  [80, 86],
-    "D":  [76, 82],
-    "F":  [currentOVR, currentOVR]
-  }[grade];
-
-  const ceil = Math.floor(base[0] + (base[1]-base[0]) * r());
-  return Math.max(ceil, currentOVR);
-}
-
-function currentOVRForPool(pool, grade, r){
-  // NCAA pool: generally higher current OVR. Intl hidden pool: more variance.
-  let ovr;
-  if (pool === "NCAA"){
-    ovr = Math.floor(64 + r()*18); // 64-81
-    if (grade === "A+" || grade === "A") ovr = Math.max(ovr, Math.floor(72 + r()*10)); // 72-81+
-  } else {
-    ovr = Math.floor(58 + r()*22); // 58-79
-    if (grade === "A+" || grade === "A") ovr = Math.max(ovr, Math.floor(70 + r()*10)); // 70-79+
-  }
-  return clamp(ovr, 50, 85);
-}
-
-function makeName(r){
-  return `${pick(FIRST, r)} ${pick(LAST, r)}`;
-}
-
-export function generateNCAAProspects({ year=1, count=100, seed="ncaa" } = {}){
+export function generateNCAAProspects({ year=1, count=60, seed="ncaa" } = {}){
   const r = rng(seedFromString(`${seed}_${year}`));
-  const out = [];
-  for (let i=0;i<count;i++){
-    const grade = rollPotentialGrade(r);
-    const currentOVR = currentOVRForPool("NCAA", grade, r);
-    const ceiling = ceilingFromGrade(grade, currentOVR, r);
-
-    out.push({
-      id: id("p", r),
+  const list = [];
+  for(let i=0; i<count; i++){
+    const ovr = clamp(Math.floor(55 + r()*30), 55, 84);
+    // Age: 19-22
+    const age = 19 + Math.floor(r() * 4);
+    
+    list.push({
+      id: id("ncaa", r),
+      name: `${pick(FIRST, r)} ${pick(LAST, r)}`,
+      pos: pick(POS, r),
+      age, // Added Age
       pool: "NCAA",
-      name: makeName(r),
-      pos: pick(POS, r),
-      age: 19 + Math.floor(r()*4),
-      currentOVR,
-      potentialGrade: grade,        // visible and truthful
-      _ceilingOVR: ceiling,          // hidden internal
-      declared: true,                // v1 default: NCAA auto declares
-      discovered: true,              // already listed
-      scouted: false                 // you can still "scout" to see info in UI
+      college: pick(COLLEGES, r),
+      currentOVR: ovr,
+      potentialGrade: rollPot(r),
+      declared: true,
+      careerStats: [] // Added History
     });
   }
-  return out;
+  return list.sort((a,b)=>b.currentOVR - a.currentOVR);
 }
 
-export function generateInternationalPool({ year=1, count=100, seed="intl" } = {}){
+export function generateInternationalPool({ year=1, count=60, seed="intl" } = {}){
   const r = rng(seedFromString(`${seed}_${year}`));
-  const out = [];
-  for (let i=0;i<count;i++){
-    const continent = pick(CONTINENTS, r);
-    const grade = rollPotentialGrade(r);
-    const currentOVR = currentOVRForPool("INTL", grade, r);
-    const ceiling = ceilingFromGrade(grade, currentOVR, r);
+  const list = [];
+  for(let i=0; i<count; i++){
+    const ovr = clamp(Math.floor(55 + r()*30), 55, 84);
+    // Age: 18-22
+    const age = 18 + Math.floor(r() * 5);
 
-    out.push({
-      id: id("p", r),
-      pool: "INTL",
-      continentKey: continent.key,
-      continentName: continent.name,
-      name: makeName(r),
+    list.push({
+      id: id("intl", r),
+      name: `${pick(FIRST, r)} ${pick(LAST, r)}`,
       pos: pick(POS, r),
-      age: 18 + Math.floor(r()*6),
-      currentOVR,
-      potentialGrade: grade,   // truthful once discovered
-      _ceilingOVR: ceiling,
-      declared: false,
-      discovered: false,
-      scouted: false,
-      declareInterest: Math.floor(10 + r()*30) // starts low
+      age, // Added Age
+      pool: "INTL",
+      continentName: pick(COUNTRIES, r),
+      currentOVR: ovr,
+      potentialGrade: rollPot(r),
+      declared: r() < 0.3, 
+      careerStats: [] // Added History
     });
   }
-  return out;
+  return list.sort((a,b)=>b.currentOVR - a.currentOVR);
 }
