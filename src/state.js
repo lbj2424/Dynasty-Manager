@@ -23,9 +23,8 @@ export function getState(){ return STATE; }
 export function ensureAppState(loadedOrNull){
   if (loadedOrNull){
     STATE = loadedOrNull;
-    
     STATE.game.history ??= [];
-    STATE.game.retiredPlayers ??= []; // Ensure retired list exists
+    STATE.game.retiredPlayers ??= []; 
 
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0;
@@ -36,7 +35,7 @@ export function ensureAppState(loadedOrNull){
       let needsRotationFix = false;
       t.roster?.forEach(p => {
         p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
-        p.careerStats ??= []; // Ensure history array exists
+        p.careerStats ??= []; 
         p.happiness ??= 70;
         p.age ??= 24; 
         if (!p.rotation) {
@@ -86,7 +85,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.4.0", createdAt: Date.now() },
+    meta: { version: "0.4.1", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -107,7 +106,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
       offseason: { freeAgents: null, draft: null, expiring: [] },
       inbox: [],
       history: [],
-      retiredPlayers: [] // New Retired List
+      retiredPlayers: []
     }
   };
 }
@@ -122,7 +121,6 @@ function processEndSeasonRoster(g){
     const nextRoster = [];
     
     for(const p of t.roster){
-      // 1. ARCHIVE STATS (History)
       p.careerStats ??= [];
       if (p.stats.gp > 0) {
           p.careerStats.push({
@@ -137,7 +135,6 @@ function processEndSeasonRoster(g){
           });
       }
 
-      // 2. REALISTIC GROWTH
       const age = p.age || 20;
       const minutes = p.rotation?.minutes || 0; 
       
@@ -176,8 +173,6 @@ function processEndSeasonRoster(g){
       p.ovr = clamp(p.ovr + totalChange, 40, 99);
       p.age = age + 1;
 
-      // 3. RETIREMENT CHECK
-      // Chance increases heavily after age 34
       let retireChance = 0;
       if (p.age >= 34) retireChance = 0.10;
       if (p.age >= 36) retireChance = 0.30;
@@ -185,7 +180,6 @@ function processEndSeasonRoster(g){
       if (p.age >= 40) retireChance = 0.90;
 
       if (Math.random() < retireChance) {
-          // RETIRE PLAYER
           g.retiredPlayers.push({
               ...p,
               retiredYear: g.year,
@@ -194,16 +188,14 @@ function processEndSeasonRoster(g){
           if(t.id === userTeamId){
              g.inbox.unshift({ t:Date.now(), msg:`${p.name} has retired at age ${p.age}.` });
           }
-          continue; // Skip adding to nextRoster
+          continue; 
       }
 
-      // 4. CONTRACT DECREMENT
       p.contract.years -= 1;
 
       if(p.contract.years > 0){
         nextRoster.push(p);
       } else {
-        // Expiring
         if(t.id === userTeamId){
            g.inbox.unshift({ t:Date.now(), msg:`${p.name}'s contract expired. They entered Free Agency.` });
         }
@@ -226,7 +218,7 @@ function processEndSeasonRoster(g){
             promisedRole: null,
             contract: null,
             offers: [],
-            careerStats: p.careerStats // Keep history
+            careerStats: p.careerStats 
         };
         g.offseason.expiring.push(faObj);
       }
@@ -238,7 +230,7 @@ function processEndSeasonRoster(g){
   }
 }
 
-// -------------------- NEW FEATURES: Re-sign & Trades --------------------
+// -------------------- NEW FEATURES --------------------
 
 export function negotiateExtension(teamId, playerId){
     const g = STATE.game;
@@ -247,22 +239,16 @@ export function negotiateExtension(teamId, playerId){
     
     if (!p) return { success:false, msg:"Player not found." };
     if (p.contract.years > 2) return { success:false, msg:"Too early to extend (>2 years left)." };
-
-    // Interest Check
-    // If happiness is low, they might refuse
     if (p.happiness < 40) return { success:false, msg:"Player is too unhappy to discuss an extension." };
 
-    // Calculate Ask
     const fairValue = calculateSalary(p.ovr, p.age);
-    // Discount based on Happiness (70+ = 5%, 90+ = 10%)
     let discount = 1.0;
     if (p.happiness >= 90) discount = 0.90;
     else if (p.happiness >= 70) discount = 0.95;
 
     const askAmount = Number((fairValue * discount).toFixed(2));
-    const addYears = 3; // Standard extension
+    const addYears = 3; 
 
-    // Check Soft Cap (Cap + 20M)
     const projectedPayroll = team.cap.payroll + (askAmount - p.contract.salary);
     const softCapLimit = team.cap.cap + 20;
 
@@ -270,10 +256,9 @@ export function negotiateExtension(teamId, playerId){
         return { success:false, msg:`Cannot sign. Payroll (${projectedPayroll.toFixed(1)}M) would exceed Soft Cap (${softCapLimit}M).` };
     }
 
-    // Execute Extension
     p.contract.salary = askAmount;
     p.contract.years += addYears;
-    p.happiness += 5; // Bonus for commitment
+    p.happiness += 5; 
 
     recalcPayroll(team);
     
@@ -281,40 +266,31 @@ export function negotiateExtension(teamId, playerId){
 }
 
 function simCpuTrades(g){
-    // Randomly attempt a trade between two AI teams
-    // 20% chance per week
     if (Math.random() > 0.20) return;
-
     const aiTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
     if (aiTeams.length < 2) return;
 
-    // Pick 2 random teams
     const t1 = aiTeams[Math.floor(Math.random() * aiTeams.length)];
     let t2 = aiTeams[Math.floor(Math.random() * aiTeams.length)];
     while (t2.id === t1.id) t2 = aiTeams[Math.floor(Math.random() * aiTeams.length)];
 
-    // Pick a random player from each to swap
     if (!t1.roster.length || !t2.roster.length) return;
     const p1 = t1.roster[Math.floor(Math.random() * t1.roster.length)];
     const p2 = t2.roster[Math.floor(Math.random() * t2.roster.length)];
 
-    // Valuation Check
-    const val1 = p1.ovr * (100 - p1.age); // Simple heuristic
+    const val1 = p1.ovr * (100 - p1.age); 
     const val2 = p2.ovr * (100 - p2.age);
     
-    // Trade needs to be "fair" (within 10% value)
     const diff = Math.abs(val1 - val2);
     const avg = (val1 + val2) / 2;
-    if (diff / avg > 0.15) return; // Too lopsided
+    if (diff / avg > 0.15) return; 
 
-    // Trade Cap Check (Cap + 10M)
     const t1NewPayroll = t1.cap.payroll - p1.contract.salary + p2.contract.salary;
     const t2NewPayroll = t2.cap.payroll - p2.contract.salary + p1.contract.salary;
     const limit = SALARY_CAP + 10;
 
-    if (t1NewPayroll > limit || t2NewPayroll > limit) return; // Cap blocked
+    if (t1NewPayroll > limit || t2NewPayroll > limit) return; 
 
-    // EXECUTE
     executeTrade(t1.id, t2.id, { players:[p1], picks:[] }, { players:[p2], picks:[] });
     
     g.inbox.unshift({ 
@@ -327,30 +303,35 @@ function simCpuTrades(g){
 
 function autoDistributeMinutes(team){
     team.roster.forEach(p => { p.rotation = { minutes: 0, isStarter: false }; });
-    let remain = 205; 
+    let remain = 220; // <--- CHANGED TO 220
     const positions = ["PG","SG","SF","PF","C"];
-    
-    // Starters
+    const starters = [];
+
     for (const pos of positions) {
         const candidates = team.roster
             .filter(p => p.pos === pos && !p.rotation.isStarter)
             .sort((a,b) => b.ovr - a.ovr);
         
         if (candidates.length > 0) {
-            candidates[0].rotation.isStarter = true;
-            candidates[0].rotation.minutes = 34;
+            const starter = candidates[0];
+            starter.rotation.isStarter = true;
+            starter.rotation.minutes = 34;
             remain -= 34;
+            starters.push(starter);
         }
     }
-    // Bench
+
     const bench = team.roster.filter(p => !p.rotation.isStarter).sort((a,b) => b.ovr - a.ovr);
     for (let i = 0; i < Math.min(5, bench.length); i++) {
-        bench[i].rotation.minutes = 10;
-        remain -= 10;
+        const p = bench[i];
+        const mins = 10; 
+        p.rotation.minutes = mins;
+        remain -= mins;
     }
-    // Remainder
-    const best = team.roster.sort((a,b)=>b.ovr-a.ovr)[0];
-    if(best && remain > 0) best.rotation.minutes += remain;
+
+    if (remain > 0 && starters.length > 0) {
+        starters[0].rotation.minutes += remain;
+    }
 }
 
 function generateFuturePicks(teamId, startYear){
@@ -466,9 +447,8 @@ export function advanceWeek(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
   
-  // Weekly Activities
   simWeekGames(g);
-  simCpuTrades(g); // <--- WEEKLY CPU TRADES
+  simCpuTrades(g); 
 
   g.week += 1;
   g.hours.banked = clamp(g.hours.banked + g.hours.available, 0, g.hours.bankMax);
