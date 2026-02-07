@@ -60,7 +60,9 @@ export function TeamScreen(){
         return el("tr", {}, [
             el("td", {}, nameLink),
             el("td", {}, p.pos),
-            el("td", {}, String(p.ovr)),
+            el("td", { style:"font-weight:bold" }, String(p.ovr)),
+            el("td", { style:"color:var(--good)" }, String(p.off)), // NEW OFF
+            el("td", { style:"color:var(--warn)" }, String(p.def)), // NEW DEF
             el("td", {}, p.potentialGrade),
             el("td", {}, String(p.age)),
             el("td", {}, String(p.happiness)),
@@ -77,6 +79,8 @@ export function TeamScreen(){
         el("th", {}, "Player"),
         el("th", {}, "Pos"),
         el("th", {}, "OVR"),
+        el("th", {}, "OFF"), // New Header
+        el("th", {}, "DEF"), // New Header
         el("th", {}, "Pot"),
         el("th", {}, "Age"),
         el("th", {}, "Happy"),
@@ -86,7 +90,7 @@ export function TeamScreen(){
         el("th", {}, "Actions")
       ])),
       el("tbody", {}, rows.length ? rows : [
-        el("tr", {}, [el("td", { colspan:"10" }, "No roster found.")])
+        el("tr", {}, [el("td", { colspan:"12" }, "No roster found.")])
       ])
     ])
   ]));
