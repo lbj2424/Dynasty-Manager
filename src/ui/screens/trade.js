@@ -1,19 +1,16 @@
-import { el, card, button, badge, interestBar } from "../components.js";
+import { el, card, button, badge, interestBar, showPlayerModal } from "../components.js"; // Import showPlayerModal
 import { getState, executeTrade } from "../../state.js";
 import { clamp } from "../../utils.js";
 
+// ... (Rest of file is same, update renderAssetList below) ...
+
 export function TradeScreen(){
+  // ... (setup code same as before) ...
   const s = getState();
   const g = s.game;
   const userTeam = g.league.teams[g.userTeamIndex];
 
-  // Internal state for the screen (selections)
-  // We attach it to the DOM node implicitly by closure, 
-  // but to keep it simple across renders, we can store in a temp object if needed.
-  // For this prototype, we'll re-render on every click.
-  
   if (!s.tempTradeState) {
-    // Default to the first CPU team
     const firstCpu = g.league.teams.find(t => t.id !== userTeam.id);
     s.tempTradeState = {
         partnerId: firstCpu.id,
@@ -25,67 +22,34 @@ export function TradeScreen(){
   const ts = s.tempTradeState;
   const partner = g.league.teams.find(t => t.id === ts.partnerId);
 
-  // --- Calculations ---
-  
-  // Value Formulas (Realistic-ish)
+  // ... (Calculations same as before) ...
   const getPlayerValue = (p) => {
-    // Exponential value for higher OVR
-    // 90 OVR ~ 1000 pts
-    // 80 OVR ~ 500 pts
-    // 70 OVR ~ 180 pts
-    // Age penalty
     let val = Math.pow((p.ovr - 50), 2.5) / 10;
-    
-    // Potential bonus
     const potBonus = { "A+": 1.5, "A": 1.3, "B": 1.15, "C": 1.0, "D": 0.9, "F": 0.8 };
     val *= (potBonus[p.potentialGrade] || 1.0);
-    
-    // Contract penalty? (Simplified: Ignore for now, or slight penalty if old and expensive)
-    
     return Math.round(val);
   };
-
-  const getPickValue = (pick) => {
-    // Request: All R1 picks equal, All R2 picks equal.
-    if (pick.round === 1) return 250; // Roughly a high-70s starter
-    return 50; // Roughly a bench player
-  };
-
+  const getPickValue = (pick) => (pick.round === 1) ? 250 : 50;
   const calcTotalValue = (items) => {
     let sum = 0;
     items.players.forEach(p => sum += getPlayerValue(p));
     items.picks.forEach(p => sum += getPickValue(p));
     return sum;
   };
-
   const userVal = calcTotalValue(ts.userOffer);
   const partnerVal = calcTotalValue(ts.partnerOffer);
-  
-  // Interest Calculation
-  // If User gives 500 value, and Partner gives 400 value -> Interest High.
-  // Delta = UserVal - PartnerVal.
-  // If Delta is 0, Interest is ~50% (fair).
-  // If Delta > 0, Interest > 50%.
-  
   const delta = userVal - partnerVal;
-  // Scale: +/- 200 value swings the bar significantly
   let interest = 50 + (delta / 5); 
   interest = clamp(interest, 0, 100);
-  
-  // "Likelihood" logic
-  // If interest > 80, almost certain.
-  // If interest < 40, reject.
   const canSubmit = ts.userOffer.players.length > 0 || ts.partnerOffer.players.length > 0 || ts.userOffer.picks.length > 0;
-
 
   const root = el("div", {}, []);
 
-  // --- Top Bar: Select Partner ---
   const otherTeams = g.league.teams.filter(t => t.id !== userTeam.id);
   const partnerSelect = el("select", {
       onchange: (e) => {
           s.tempTradeState.partnerId = otherTeams[e.target.selectedIndex].id;
-          s.tempTradeState.partnerOffer = { players:[], picks:[] }; // Reset their side
+          s.tempTradeState.partnerOffer = { players:[], picks:[] }; 
           rerender(root);
       }
   }, otherTeams.map(t => el("option", { value: t.id, selected: t.id === partner.id }, t.name)));
@@ -97,9 +61,7 @@ export function TradeScreen(){
       ])
   ]));
 
-  // --- The Trade Block (Center) ---
-  
-  // Helper to render a selected item
+  // ... (Trade Block rendering same as before) ...
   const renderItem = (item, type, side) => {
       const label = type === 'player' 
         ? `${item.name} (${item.pos} ${item.ovr})`
@@ -153,9 +115,6 @@ export function TradeScreen(){
               primary: true,
               onClick: () => {
                   if (!canSubmit) return;
-                  
-                  // Simple logic: Needs interest >= 60 to accept
-                  // Or random chance if between 45 and 60.
                   let accepted = false;
                   if (interest >= 60) accepted = true;
                   else if (interest >= 45) {
@@ -165,7 +124,6 @@ export function TradeScreen(){
                   if (accepted) {
                       executeTrade(userTeam.id, partner.id, ts.userOffer, ts.partnerOffer);
                       alert("Trade Accepted!");
-                      // Clear state
                       s.tempTradeState.userOffer = {players:[], picks:[]};
                       s.tempTradeState.partnerOffer = {players:[], picks:[]};
                       rerender(root);
@@ -181,7 +139,6 @@ export function TradeScreen(){
   
   const renderAssetList = (team, side) => {
       const roster = team.roster.filter(p => {
-          // Filter out already selected players
           if (side === 'user') return !ts.userOffer.players.find(x => x.id === p.id);
           return !ts.partnerOffer.players.find(x => x.id === p.id);
       }).sort((a,b) => b.ovr - a.ovr);
@@ -195,19 +152,26 @@ export function TradeScreen(){
           el("div", { class:"h2" }, "Players"),
           el("div", { style:"max-height:300px; overflow-y:auto;" }, 
             el("table", { class:"table" }, [
-              el("thead", {}, el("tr", {}, [el("th",{},"Name"), el("th",{},"Pos"), el("th",{},"OVR"), el("th",{},"Pot"), el("th",{},"Age"), el("th",{},"Action")])),
-              el("tbody", {}, roster.map(p => el("tr", {}, [
-                  el("td", {}, p.name),
-                  el("td", {}, p.pos),
-                  el("td", {}, String(p.ovr)),
-                  el("td", {}, p.potentialGrade),
-                  el("td", {}, String(2025 - (2025 - (p.age || 20)))), // rough hack if age missing
-                  el("td", {}, button("Add", { small:true, onClick:()=>{
-                      if (side === 'user') ts.userOffer.players.push(p);
-                      else ts.partnerOffer.players.push(p);
-                      rerender(root);
-                  }}))
-              ])))
+              el("thead", {}, el("tr", {}, [el("th",{},"Name"), el("th",{},"Pos"), el("th",{},"OVR"), el("th",{},"Age"), el("th",{},"Action")])),
+              el("tbody", {}, roster.map(p => {
+                  // NEW: CLICKABLE NAME
+                  const nameSpan = el("span", {
+                      style: "cursor:pointer; text-decoration:underline; color:var(--accent);",
+                      onclick: () => showPlayerModal(p)
+                  }, p.name);
+
+                  return el("tr", {}, [
+                      el("td", {}, nameSpan),
+                      el("td", {}, p.pos),
+                      el("td", {}, String(p.ovr)),
+                      el("td", {}, String(p.age)),
+                      el("td", {}, button("Add", { small:true, onClick:()=>{
+                          if (side === 'user') ts.userOffer.players.push(p);
+                          else ts.partnerOffer.players.push(p);
+                          rerender(root);
+                      }}))
+                  ]);
+              }))
             ])
           ),
           el("div", { class:"sep" }),
