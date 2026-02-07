@@ -65,26 +65,16 @@ export function DraftScreen(){
 function renderBoard(d, g, userOnClock, onClockTeamId){
   const scoutedSet = makeScoutedSet(g);
   
-  // 1. Get ALL declared players
   const allAvailable = d.declaredProspects.filter(p => !p._drafted);
-
-  // 2. Separate into "Top Unscouted" and "All Scouted"
-  // Show Top 60 generally available
   const topGeneral = allAvailable.slice(0, 60);
-  
-  // Also include ANY player found in scoutedSet, regardless of rank
   const scoutedList = allAvailable.filter(p => scoutedSet.has(p.id));
   
-  // Combine unique
   const displaySet = new Set([...topGeneral, ...scoutedList]);
   const displayList = Array.from(displaySet).sort((a,b) => b.currentOVR - a.currentOVR);
 
   const rows = displayList.map(p => {
     const youKnow = scoutedSet.has(p.id);
 
-    // If I didn't scout them, and they are INTL, I probably shouldn't see full details?
-    // Game logic: declared = visible.
-    
     const pickBtn = button("Draft", {
       small: true,
       primary: userOnClock,
@@ -95,7 +85,6 @@ function renderBoard(d, g, userOnClock, onClockTeamId){
       }
     });
     
-    // Clickable Name
     const nameLink = el("span", { 
         style: "cursor:pointer; text-decoration:underline; color:var(--accent);",
         onclick: () => showPlayerModal(p)
@@ -188,21 +177,45 @@ function makePick(d, teamId, prospect, g){
   const team = g.league.teams.find(t => t.id === teamId);
   if (team){
     const rookieSalary = round === 1 ? 4.0 : 1.5;
+    
+    // --- FIX: GENERATE OFF/DEF FOR ROOKIES ---
+    // Since prospects track 'currentOVR', we split it into OFF/DEF now
+    const typeRoll = Math.random();
+    let off = prospect.currentOVR; 
+    let def = prospect.currentOVR;
+    
+    if (typeRoll < 0.35) { 
+        // Scorer
+        off += 5; 
+        def -= 5; 
+    } else if (typeRoll < 0.70) { 
+        // Defender
+        off -= 5; 
+        def += 5; 
+    }
+    
+    off = clamp(off, 40, 99);
+    def = clamp(def, 40, 99);
+    const finalOvr = Math.round((off + def)/2);
+    // -----------------------------------------
+
     team.roster.push({
       id: prospect.id,
       name: prospect.name,
       pos: prospect.pos,
-      ovr: prospect.currentOVR,
-      age: prospect.age, // Pass age
+      ovr: finalOvr,
+      off: off, // NEW
+      def: def, // NEW
+      age: prospect.age || 20, // FIX: Fallback just in case
       potentialGrade: prospect.potentialGrade,
-      rookieYear: g.year, // Mark rookie year
+      rookieYear: g.year, 
       happiness: 70,
       dev: { focus: "Overall", points: 7 },
       promisedRole: "Reserve",
       contract: { years: 2, salary: rookieSalary },
       stats: { gp:0, pts:0, reb:0, ast:0 },
       rotation: { minutes: 0, isStarter: false },
-      careerStats: [] // Init history
+      careerStats: [] 
     });
     team.cap.payroll = Number((team.cap.payroll + rookieSalary).toFixed(1));
   }
@@ -213,31 +226,22 @@ function makePick(d, teamId, prospect, g){
 function cpuPickWeighted(d, teamId, g){
   if (d.done) return; 
   
-  // EXCLUSIVITY LOGIC:
-  // If a player is INTL and in the user's scoutedIntlIds, the CPU should ignore them 
-  // (unless CPU logic implies they "found" them too, but user asked for exclusivity).
   const scoutedSet = makeScoutedSet(g);
   
   const available = d.declaredProspects.filter(p => {
       if (p._drafted) return false;
-      
-      // If Intl and Scouted by User -> Hidden from CPU?
       if (p.pool === "INTL" && scoutedSet.has(p.id)) {
-          return false; // Skip this player, they are a "Hidden Gem" for user
+          return false; 
       }
       return true;
   });
 
   if (!available.length) {
-    // If only hidden gems remain, CPU skips or draft ends? 
-    // Just force draft end or pick random unsought guy? 
-    // Fallback: Pick ANY available if list empty (CPU finds them eventually)
     const trulyAny = d.declaredProspects.filter(p => !p._drafted);
     if (!trulyAny.length) {
         d.done = true;
         return;
     }
-    // Pick from trulyAny if strict list is empty
     makePick(d, teamId, trulyAny[0], g);
     return;
   }
