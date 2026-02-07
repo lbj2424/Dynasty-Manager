@@ -6,7 +6,6 @@ const POS = ["PG","SG","SF","PF","C"];
 const COLLEGES = ["Duke","unc","Kentucky","Kansas","Villanova","Gonzaga","UCLA","Arizona","Michigan","Texas","Florida","Virginia","Oregon","Ohio St","Alabama","Auburn","Tennessee","Houston","Baylor","Purdue"];
 const COUNTRIES = ["France","Spain","Serbia","Slovenia","Australia","Canada","Germany","Lithuania","Turkey","Greece","Italy","Brazil","Argentina","Nigeria","China","Japan"];
 
-// Mapping for Scouting Logic
 const COUNTRY_TO_CONT = {
   "France": "EU", "Spain": "EU", "Serbia": "EU", "Slovenia": "EU", "Germany": "EU",
   "Lithuania": "EU", "Turkey": "EU", "Greece": "EU", "Italy": "EU",
@@ -43,7 +42,7 @@ export function generateNCAAProspects({ year=1, count=60, seed="ncaa" } = {}){
       college: pick(COLLEGES, r),
       currentOVR: ovr,
       potentialGrade: rollPot(r),
-      declared: true, // NCAA players are declared by default
+      declared: true, 
       careerStats: [] 
     });
   }
@@ -65,10 +64,10 @@ export function generateInternationalPool({ year=1, count=60, seed="intl" } = {}
       age, 
       pool: "INTL",
       continentName: country,
-      continentKey: COUNTRY_TO_CONT[country] || "EU", // Fix Scouting
+      continentKey: COUNTRY_TO_CONT[country] || "EU", 
       currentOVR: ovr,
       potentialGrade: rollPot(r),
-      declared: false, // Fix: Must be recruited (Diamonds in the rough)
+      declared: false, // Fix: Must be recruited
       careerStats: [] 
     });
   }
