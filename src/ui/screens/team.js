@@ -1,5 +1,5 @@
-import { el, card, badge, button } from "../components.js";
-import { getState, releasePlayer } from "../../state.js"; // <--- Import releasePlayer
+import { el, card, badge, button, showPlayerModal } from "../components.js";
+import { getState, releasePlayer, negotiateExtension } from "../../state.js";
 
 export function TeamScreen(){
   const s = getState();
@@ -22,7 +22,6 @@ export function TeamScreen(){
     })
   ]));
 
-  // roster table
   const rows = (team.roster || [])
     .slice()
     .sort((a,b) => b.ovr - a.ovr)
@@ -34,41 +33,57 @@ export function TeamScreen(){
             onClick: () => {
                 if(confirm(`Release ${p.name}? This will clear ${p.contract.salary}M cap space immediately.`)){
                     releasePlayer(team.id, p.id);
-                    // Force refresh
-                    const parent = root.parentElement;
-                    parent.innerHTML = "";
-                    parent.appendChild(TeamScreen());
+                    rerender(root);
                 }
             }
         });
 
+        // Re-sign Button (Only if <= 2 years left)
+        let resignBtn = null;
+        if (p.contract.years <= 2) {
+            resignBtn = button("Extend", {
+                small: true,
+                onClick: () => {
+                    const res = negotiateExtension(team.id, p.id);
+                    alert(res.msg);
+                    if(res.success) rerender(root);
+                }
+            });
+        }
+
+        // Clickable Name
+        const nameLink = el("span", { 
+            style: "cursor:pointer; text-decoration:underline; color:var(--accent);",
+            onclick: () => showPlayerModal(p)
+        }, p.name);
+
         return el("tr", {}, [
-            el("td", {}, p.name),
+            el("td", {}, nameLink),
             el("td", {}, p.pos),
             el("td", {}, String(p.ovr)),
             el("td", {}, p.potentialGrade),
-            el("td", {}, `${p.dev.focus} (${p.dev.points})`),
+            el("td", {}, String(p.age)),
             el("td", {}, String(p.happiness)),
             el("td", {}, `${p.contract.years}y / ${p.contract.salary}M`),
-            el("td", {}, `${(p.rotation?.minutes || 0)} min`), // Show mins here too
+            el("td", {}, `${(p.rotation?.minutes || 0)} min`),
             el("td", {}, `${p.stats.pts.toFixed(1)}`),
-            el("td", {}, cutBtn) // <--- Added button
+            el("td", { style:"display:flex; gap:4px;" }, [resignBtn, cutBtn])
         ]);
     });
 
-  root.appendChild(card("Roster", "PTS/REB/AST are season averages.", [
+  root.appendChild(card("Roster", "Click names for history. Extensions allowed with <= 2 years left.", [
     el("table", { class:"table" }, [
       el("thead", {}, el("tr", {}, [
         el("th", {}, "Player"),
         el("th", {}, "Pos"),
         el("th", {}, "OVR"),
         el("th", {}, "Pot"),
-        el("th", {}, "Dev"),
+        el("th", {}, "Age"),
         el("th", {}, "Happy"),
         el("th", {}, "Contract"),
         el("th", {}, "Mins"),
         el("th", {}, "PTS"),
-        el("th", {}, "Action")
+        el("th", {}, "Actions")
       ])),
       el("tbody", {}, rows.length ? rows : [
         el("tr", {}, [el("td", { colspan:"10" }, "No roster found.")])
@@ -77,4 +92,11 @@ export function TeamScreen(){
   ]));
 
   return root;
+}
+
+function rerender(root){
+  const parent = root.parentElement;
+  if (!parent) return;
+  parent.innerHTML = "";
+  parent.appendChild(TeamScreen());
 }
