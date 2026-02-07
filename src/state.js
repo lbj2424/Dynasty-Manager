@@ -45,6 +45,7 @@ export function ensureAppState(loadedOrNull){
       });
 
       if (needsRotationFix) autoDistributeMinutes(t);
+      updateTeamRating(t); // <--- FIX: Update ratings on load
       recalcPayroll(t);
     });
     return;
@@ -64,6 +65,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
     t.cap.cap ??= SALARY_CAP;
 
     autoDistributeMinutes(t);
+    updateTeamRating(t); // <--- FIX: Calc initial rating from players
     recalcPayroll(t);
 
     if (t.cap.payroll > t.cap.cap) {
@@ -85,7 +87,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.4.4", createdAt: Date.now() },
+    meta: { version: "0.4.5", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -111,7 +113,22 @@ export function newGameState({ userTeamIndex=0 } = {}){
   };
 }
 
-// -------------------- FREE AGENCY LOGIC (New) --------------------
+// -------------------- LOGIC HELPERS --------------------
+
+// --- NEW: Calculate Team Rating based on Top 8 Players ---
+function updateTeamRating(team) {
+    if (!team.roster || team.roster.length === 0) {
+        team.rating = 60;
+        return;
+    }
+    // Sort by OVR
+    const top8 = team.roster.slice().sort((a,b) => b.ovr - a.ovr).slice(0, 8);
+    const total = top8.reduce((sum, p) => sum + p.ovr, 0);
+    // Average
+    team.rating = Math.round(total / Math.max(1, top8.length));
+}
+
+// -------------------- FREE AGENCY --------------------
 
 export function startFreeAgency(){
   const g = STATE.game;
@@ -127,9 +144,7 @@ export function startFreeAgency(){
     pool: combinedPool
   };
 
-  // --- NEW: Generate CPU Offers ---
   generateInitialOffers(g);
-  // -------------------------------
 
   g.inbox.unshift({ t: Date.now(), msg: `Free Agency started. ${expiringPool.length} players joined from expired contracts.` });
 }
@@ -138,33 +153,25 @@ function generateInitialOffers(g){
     const fa = g.offseason.freeAgents;
     const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
 
-    // Give offers mostly to good players
     for (const p of fa.pool) {
-        p.offers = []; // Reset offers
+        p.offers = []; 
 
-        // Determine demand based on OVR
         let demandChance = 0;
         if (p.ovr >= 85) demandChance = 0.95;
         else if (p.ovr >= 80) demandChance = 0.70;
         else if (p.ovr >= 75) demandChance = 0.40;
         else if (p.ovr >= 70) demandChance = 0.15;
-        else demandChance = 0.05; // Scrubs rarely get early offers
+        else demandChance = 0.05;
 
         if (Math.random() > demandChance) continue;
 
-        // How many teams want him? (1 to 3)
         const numOffers = Math.floor(Math.random() * 3) + 1;
-        
-        // Shuffle teams to find bidders
         const shuffled = [...cpuTeams].sort(() => 0.5 - Math.random());
         
         for (const t of shuffled) {
             if (p.offers.length >= numOffers) break;
 
             const capSpace = t.cap.cap - t.cap.payroll;
-            // CPU Offer Logic:
-            // They offer close to Ask, maybe slightly more or less
-            // Factor: -10% to +10% of ask
             const offerAmount = p.ask * (0.9 + Math.random() * 0.2);
             
             if (capSpace > offerAmount && t.roster.length < 15) {
@@ -172,7 +179,7 @@ function generateInitialOffers(g){
                     teamId: t.id,
                     teamName: t.name,
                     salary: Number(offerAmount.toFixed(2)),
-                    years: p.yearsAsk, // Match years ask usually
+                    years: p.yearsAsk, 
                 });
             }
         }
@@ -180,40 +187,25 @@ function generateInitialOffers(g){
 }
 
 export function calculateSignChance(player, offerSalary, offerYears){
-    // Calculate Score for User Offer
-    // Score = Salary * (1 + 0.1 * Years)  -> Players value money + security
     const userScore = offerSalary * (1 + 0.1 * offerYears);
-
-    // Calculate Score for Player Ask (Baseline)
     const askScore = player.ask * (1 + 0.1 * player.yearsAsk);
 
-    // Calculate Score for Best CPU Offer
     let bestCpuScore = 0;
     for (const off of (player.offers || [])) {
         const s = off.salary * (1 + 0.1 * off.years);
         if (s > bestCpuScore) bestCpuScore = s;
     }
 
-    // The "Target" to beat is the max of Ask or Best Offer
     const target = Math.max(askScore, bestCpuScore);
-
-    // Probability Formula
-    // Ratio > 1.15 = 100%
-    // Ratio = 1.0 = 50%
-    // Ratio < 0.85 = 0%
-    
-    if (target === 0) return 100; // Should handle edge case, but ask is never 0
+    if (target === 0) return 100;
 
     const ratio = userScore / target;
-    
-    // Scale: 0.85 -> 0, 1.0 -> 50, 1.15 -> 100
-    // Linear interpolation
     let chance = (ratio - 0.85) / (1.15 - 0.85) * 100;
     
     return clamp(Math.round(chance), 0, 100);
 }
 
-// -------------------- HELPER FUNCTIONS --------------------
+// -------------------- SEASON END & PROGRESSION --------------------
 
 function processEndSeasonRoster(g){
   const userTeamId = g.league.teams[g.userTeamIndex].id;
@@ -305,7 +297,7 @@ function processEndSeasonRoster(g){
             signedByTeamId: null,
             contract: null,
             careerStats: p.careerStats,
-            offers: [] // Init offers
+            offers: []
         });
       }
     }
@@ -313,6 +305,7 @@ function processEndSeasonRoster(g){
     t.roster = nextRoster;
     autoDistributeMinutes(t);
     recalcPayroll(t);
+    updateTeamRating(t); // <--- FIX: Update ratings after progression/retirement
   }
 }
 
@@ -449,6 +442,8 @@ export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
     recalcPayroll(otherTeam);
     autoDistributeMinutes(userTeam);
     autoDistributeMinutes(otherTeam);
+    updateTeamRating(userTeam); // <--- FIX: Update ratings after trade
+    updateTeamRating(otherTeam);
 
     return true;
 }
@@ -461,6 +456,7 @@ export function releasePlayer(teamId, playerId){
     if (idx === -1) return;
     team.roster.splice(idx, 1);
     recalcPayroll(team);
+    updateTeamRating(team); // <--- FIX: Update rating after cut
 }
 
 export function setActiveSaveSlot(slot){
@@ -676,6 +672,7 @@ export function startPlayoffs(){
   g.inbox.unshift({ t: Date.now(), msg: "Playoffs started (Top 8 East/West)." });
 }
 
+// --- FIX: Playoff Simulation now calculates scores instead of coin flips ---
 export function simPlayoffRound(){
   const g = STATE.game;
   if (g.phase !== PHASES.PLAYOFFS) return;
@@ -689,9 +686,26 @@ export function simPlayoffRound(){
 
   for (const s of allSeries){
     if (s.done) continue;
+
+    // Simulate entire series in one go
+    const teamA = g.league.teams.find(t => t.id === s.a);
+    const teamB = g.league.teams.find(t => t.id === s.b);
+
     while (s.aWins < 4 && s.bWins < 4){
-        if (Math.random() > 0.5) s.aWins++; else s.bWins++;
+        // Simulate a single game using the real engine
+        let ptsA = simTeamStats(teamA);
+        let ptsB = simTeamStats(teamB);
+        
+        // Prevent ties
+        while (ptsA === ptsB) {
+            ptsA += Math.floor(Math.random() * 6);
+            ptsB += Math.floor(Math.random() * 6);
+        }
+
+        if (ptsA > ptsB) s.aWins++;
+        else s.bWins++;
     }
+
     s.done = true;
     s.winner = (s.aWins === 4) ? s.a : s.b;
   }
