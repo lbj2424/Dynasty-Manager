@@ -86,7 +86,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.4.2", createdAt: Date.now() },
+    meta: { version: "0.4.3", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -136,16 +136,33 @@ function processEndSeasonRoster(g){
           });
       }
 
+      // --- NEW DEVELOPMENT LOGIC ---
       const age = p.age || 20;
       const minutes = p.rotation?.minutes || 0; 
       
       let baseChange = 0;
+
+      // 1. Age Curve
       if (age <= 22) baseChange = 2;       
       else if (age <= 25) baseChange = 1;  
       else if (age <= 29) baseChange = 0;  
       else if (age <= 32) baseChange = -1; 
       else baseChange = -3;                
 
+      // 2. Potential Velocity (Talent Factor)
+      // A+ and A players now effectively get +1 speed
+      if (p.potentialGrade === "A+" || p.potentialGrade === "A") baseChange += 1;
+      // F players learn slower
+      if (p.potentialGrade === "F") baseChange -= 1;
+
+      // 3. Playtime / XP
+      if (age < 26) {
+          // Lowered threshold to 18 mins (so 20 min players get credit)
+          if (minutes >= 18) baseChange += 1; 
+          else if (minutes < 8) baseChange -= 1; 
+      }
+
+      // 4. Cap Logic (Ceiling)
       const caps = { "A+":99, "A":92, "B":84, "C":77, "D":70, "F":60 };
       const softCap = caps[p.potentialGrade] || 75;
       
@@ -154,26 +171,22 @@ function processEndSeasonRoster(g){
           else baseChange -= 1; 
       }
 
-      if (age < 26) {
-          if (minutes >= 25) baseChange += 1; 
-          else if (minutes < 10) baseChange -= 1; 
-      }
-
+      // 5. Random Variance
       const roll = Math.random();
       if (roll < 0.05) {
-          baseChange += 3;
-          if(t.id === userTeamId) {
-              g.inbox.unshift({ t:Date.now(), msg:`BREAKOUT: ${p.name} had a massive offseason (+${baseChange + 1})!` });
-          }
+          baseChange += 3; // Breakout
+          if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`BREAKOUT: ${p.name} (+${baseChange + 1})!` });
       } else if (roll < 0.10) {
-          baseChange -= 2;
+          baseChange -= 2; // Regression
       }
 
-      const noise = Math.floor(Math.random() * 3) - 1; 
+      const noise = Math.floor(Math.random() * 3) - 1; // -1, 0, 1
       let totalChange = baseChange + noise;
+      
       p.ovr = clamp(p.ovr + totalChange, 40, 99);
       p.age = age + 1;
 
+      // --- Retirement & Contract Logic ---
       let retireChance = 0;
       if (p.age >= 34) retireChance = 0.10;
       if (p.age >= 36) retireChance = 0.30;
@@ -181,14 +194,8 @@ function processEndSeasonRoster(g){
       if (p.age >= 40) retireChance = 0.90;
 
       if (Math.random() < retireChance) {
-          g.retiredPlayers.push({
-              ...p,
-              retiredYear: g.year,
-              finalTeam: t.name
-          });
-          if(t.id === userTeamId){
-             g.inbox.unshift({ t:Date.now(), msg:`${p.name} has retired at age ${p.age}.` });
-          }
+          g.retiredPlayers.push({ ...p, retiredYear: g.year, finalTeam: t.name });
+          if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`${p.name} has retired at age ${p.age}.` });
           continue; 
       }
 
@@ -197,31 +204,19 @@ function processEndSeasonRoster(g){
       if(p.contract.years > 0){
         nextRoster.push(p);
       } else {
-        if(t.id === userTeamId){
-           g.inbox.unshift({ t:Date.now(), msg:`${p.name}'s contract expired. They entered Free Agency.` });
-        }
+        if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`${p.name}'s contract expired.` });
         
         const fairValue = calculateSalary(p.ovr, p.age);
         const greed = 0.9 + Math.random() * 0.3; 
         
-        const faObj = {
-            id: p.id,
-            name: p.name,
-            pos: p.pos,
-            ovr: p.ovr,
-            age: p.age,
-            potentialGrade: p.potentialGrade,
+        g.offseason.expiring.push({
+            ...p,
             ask: Number((fairValue * greed).toFixed(2)),
             yearsAsk: Math.max(1, Math.min(4, Math.floor(Math.random() * 4) + 1)),
-            wantsWinning: Math.random() > 0.5,
-            wantsRole: Math.random() > 0.5,
             signedByTeamId: null,
-            promisedRole: null,
             contract: null,
-            offers: [],
             careerStats: p.careerStats 
-        };
-        g.offseason.expiring.push(faObj);
+        });
       }
     }
     
@@ -624,7 +619,7 @@ export function simPlayoffRound(){
   if (roundOver) {
       if (p.round === 4) {
           p.championTeamId = allSeries[0].winner;
-          finalizeSeasonAndLogHistory({ championTeamId: p.championTeamId });
+          finalizeSeasonAndLogHistory({ championTeamId: p.championTeamId, userPlayoffFinish: "Playoffs" });
           startFreeAgency();
       } else {
           p.round++;
@@ -778,9 +773,12 @@ export function advanceToNextYear(){
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
 }
 
-export function finalizeSeasonAndLogHistory({ championTeamId }){
+export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
   const g = STATE.game;
+  
+  // --- PROCESS ROSTER UPDATES (Age up, Contracts down, Collect Expiring) ---
   processEndSeasonRoster(g);
+  // -------------------------------------------------------------------------
 
   g.history ??= [];
   const userTeam = g.league.teams[g.userTeamIndex];
@@ -856,15 +854,10 @@ function computeAwards(g){
   });
   
   // --- FIX ROY ---
-  // Try to find rookies with decent GP
   let rookies = played.filter(x => x.player.rookieYear === g.year);
-  
-  // Fallback: If no rookies qualified via GP (e.g. simulated stats were weird), 
-  // loosen the GP filter to just anyone with the rookieYear flag.
   if (rookies.length === 0) {
       rookies = all.filter(x => x.player.rookieYear === g.year);
   }
-
   const roy = topBy(rookies, x => x.ptsPg * 1.0 + x.astPg * 0.45 + (x.player.ovr || 70) * 0.2);
   // --------------
 
@@ -872,7 +865,7 @@ function computeAwards(g){
     MVP: packAward(mvp),
     OPOY: packAward(opoy),
     DPOY: packAward(dpoy),
-    ROY: roy ? packAward(roy) : { player: "None", team: "-" } // Fallback display
+    ROY: roy ? packAward(roy) : { player: "None", team: "-" } 
   };
 }
 
