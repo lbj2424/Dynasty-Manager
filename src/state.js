@@ -7,7 +7,8 @@ import {
   HOURS_PER_WEEK,
   SEASON_WEEKS,
   PHASES,
-  SALARY_CAP
+  SALARY_CAP,
+  DECLARE_THRESHOLD // Import Threshold
 } from "./data/constants.js";
 import { clamp, id } from "./utils.js";
 
@@ -26,7 +27,7 @@ export function ensureAppState(loadedOrNull){
     STATE.game.history ??= [];
     STATE.game.retiredPlayers ??= []; 
 
-    // --- FIX FOR BROKEN INTL SCOUTING (BACKFILL KEYS) ---
+    // --- FIX 1: Backfill Continent Keys ---
     if (STATE.game.scouting && STATE.game.scouting.intlPool) {
         const MAP = {
             "France": "EU", "Spain": "EU", "Serbia": "EU", "Slovenia": "EU", "Germany": "EU",
@@ -37,10 +38,18 @@ export function ensureAppState(loadedOrNull){
             "China": "AS", "Japan": "AS",
             "Australia": "OC"
         };
+        
         for (const p of STATE.game.scouting.intlPool) {
-            // If missing key, derive it from continentName (which holds the country)
+            // Fix missing key
             if (!p.continentKey && p.continentName) {
                 p.continentKey = MAP[p.continentName] || "EU";
+            }
+            
+            // --- FIX 2: Undeclare auto-declared players ---
+            // If they are declared BUT have low/no interest, it was likely the auto-generator.
+            // Reset them to false so they become "hidden gems" again.
+            if (p.declared && (p.declareInterest || 0) < (DECLARE_THRESHOLD || 50)) {
+                p.declared = false;
             }
         }
     }
@@ -105,7 +114,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.4.5", createdAt: Date.now() },
+    meta: { version: "0.4.6", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
