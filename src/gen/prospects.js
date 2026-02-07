@@ -6,6 +6,17 @@ const POS = ["PG","SG","SF","PF","C"];
 const COLLEGES = ["Duke","unc","Kentucky","Kansas","Villanova","Gonzaga","UCLA","Arizona","Michigan","Texas","Florida","Virginia","Oregon","Ohio St","Alabama","Auburn","Tennessee","Houston","Baylor","Purdue"];
 const COUNTRIES = ["France","Spain","Serbia","Slovenia","Australia","Canada","Germany","Lithuania","Turkey","Greece","Italy","Brazil","Argentina","Nigeria","China","Japan"];
 
+// Map Countries to Continent Keys
+const COUNTRY_TO_CONT = {
+  "France": "EU", "Spain": "EU", "Serbia": "EU", "Slovenia": "EU", "Germany": "EU",
+  "Lithuania": "EU", "Turkey": "EU", "Greece": "EU", "Italy": "EU",
+  "Canada": "NA",
+  "Brazil": "SA", "Argentina": "SA",
+  "Nigeria": "AF",
+  "China": "AS", "Japan": "AS",
+  "Australia": "OC"
+};
+
 function rollPot(r){
   const x = r();
   if (x < 0.05) return "A+";
@@ -21,20 +32,19 @@ export function generateNCAAProspects({ year=1, count=60, seed="ncaa" } = {}){
   const list = [];
   for(let i=0; i<count; i++){
     const ovr = clamp(Math.floor(55 + r()*30), 55, 84);
-    // Age: 19-22
     const age = 19 + Math.floor(r() * 4);
     
     list.push({
       id: id("ncaa", r),
       name: `${pick(FIRST, r)} ${pick(LAST, r)}`,
       pos: pick(POS, r),
-      age, // Added Age
+      age,
       pool: "NCAA",
       college: pick(COLLEGES, r),
       currentOVR: ovr,
       potentialGrade: rollPot(r),
       declared: true,
-      careerStats: [] // Added History
+      careerStats: [] 
     });
   }
   return list.sort((a,b)=>b.currentOVR - a.currentOVR);
@@ -45,20 +55,21 @@ export function generateInternationalPool({ year=1, count=60, seed="intl" } = {}
   const list = [];
   for(let i=0; i<count; i++){
     const ovr = clamp(Math.floor(55 + r()*30), 55, 84);
-    // Age: 18-22
     const age = 18 + Math.floor(r() * 5);
+    const country = pick(COUNTRIES, r);
 
     list.push({
       id: id("intl", r),
       name: `${pick(FIRST, r)} ${pick(LAST, r)}`,
       pos: pick(POS, r),
-      age, // Added Age
+      age,
       pool: "INTL",
-      continentName: pick(COUNTRIES, r),
+      continentName: country, // Display name (e.g. "France")
+      continentKey: COUNTRY_TO_CONT[country] || "EU", // Logic key (e.g. "EU")
       currentOVR: ovr,
       potentialGrade: rollPot(r),
       declared: r() < 0.3, 
-      careerStats: [] // Added History
+      careerStats: [] 
     });
   }
   return list.sort((a,b)=>b.currentOVR - a.currentOVR);
