@@ -23,6 +23,7 @@ export function getState(){ return STATE; }
 export function ensureAppState(loadedOrNull){
   if (loadedOrNull){
     STATE = loadedOrNull;
+    
     STATE.game.history ??= [];
     STATE.game.retiredPlayers ??= []; 
 
@@ -85,7 +86,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.4.1", createdAt: Date.now() },
+    meta: { version: "0.4.2", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -303,35 +304,27 @@ function simCpuTrades(g){
 
 function autoDistributeMinutes(team){
     team.roster.forEach(p => { p.rotation = { minutes: 0, isStarter: false }; });
-    let remain = 220; // <--- CHANGED TO 220
+    let remain = 220; 
     const positions = ["PG","SG","SF","PF","C"];
-    const starters = [];
-
+    
     for (const pos of positions) {
         const candidates = team.roster
             .filter(p => p.pos === pos && !p.rotation.isStarter)
             .sort((a,b) => b.ovr - a.ovr);
         
         if (candidates.length > 0) {
-            const starter = candidates[0];
-            starter.rotation.isStarter = true;
-            starter.rotation.minutes = 34;
+            candidates[0].rotation.isStarter = true;
+            candidates[0].rotation.minutes = 34;
             remain -= 34;
-            starters.push(starter);
         }
     }
-
     const bench = team.roster.filter(p => !p.rotation.isStarter).sort((a,b) => b.ovr - a.ovr);
     for (let i = 0; i < Math.min(5, bench.length); i++) {
-        const p = bench[i];
-        const mins = 10; 
-        p.rotation.minutes = mins;
-        remain -= mins;
+        bench[i].rotation.minutes = 10;
+        remain -= 10;
     }
-
-    if (remain > 0 && starters.length > 0) {
-        starters[0].rotation.minutes += remain;
-    }
+    const best = team.roster.sort((a,b)=>b.ovr-a.ovr)[0];
+    if(best && remain > 0) best.rotation.minutes += remain;
 }
 
 function generateFuturePicks(teamId, startYear){
@@ -631,7 +624,7 @@ export function simPlayoffRound(){
   if (roundOver) {
       if (p.round === 4) {
           p.championTeamId = allSeries[0].winner;
-          finalizeSeasonAndLogHistory({ championTeamId: p.championTeamId, userPlayoffFinish: "Playoffs" });
+          finalizeSeasonAndLogHistory({ championTeamId: p.championTeamId });
           startFreeAgency();
       } else {
           p.round++;
@@ -785,7 +778,7 @@ export function advanceToNextYear(){
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
 }
 
-export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
+export function finalizeSeasonAndLogHistory({ championTeamId }){
   const g = STATE.game;
   processEndSeasonRoster(g);
 
@@ -794,10 +787,40 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
   const championTeam = g.league.teams.find(t => t.id === championTeamId);
   const awards = computeAwards(g);
 
+  // --- NEW: Calculate User Playoff Result ---
+  let userFinish = "Didn't Make";
+  const userTeamId = userTeam.id;
+  const p = g.playoffs;
+
+  // 1. Did they make it?
+  if (p.eastSeeds.includes(userTeamId) || p.westSeeds.includes(userTeamId)) {
+      userFinish = "Round 1"; // Made it at least here
+      // 2. Scan rounds to see how far they got
+      for (const r of p.rounds) {
+          const allSeries = [...(r.east||[]), ...(r.west||[]), ...(r.finals||[])];
+          const userSeries = allSeries.find(s => s.a === userTeamId || s.b === userTeamId);
+          
+          if (userSeries) {
+              if (userSeries.winner === userTeamId) {
+                  // Won this round, so they reached the NEXT round
+                  if (r.name === "Round 1") userFinish = "Semis";
+                  else if (r.name === "Semis") userFinish = "Conf. Finals";
+                  else if (r.name === "Conf. Finals") userFinish = "Finals";
+                  else if (r.name === "Finals") userFinish = "Champion";
+              } else {
+                  // Lost in this round, so userFinish remains the round name (e.g. "Finals")
+                  userFinish = r.name;
+                  break; 
+              }
+          }
+      }
+  }
+  // ------------------------------------------
+
   g.history.push({
     year: g.year,
     userRecord: { wins: userTeam.wins, losses: userTeam.losses },
-    userPlayoffFinish: userPlayoffFinish || null,
+    userPlayoffFinish: userFinish,
     championTeam: championTeam?.name || "—",
     awards
   });
@@ -831,16 +854,25 @@ function computeAwards(g){
     const teamDefProxy = (x.team.rating || 70) * 0.35;
     return bigBonus + ovr * 1.0 + teamDefProxy;
   });
-  const rookies = played.filter(x => x.player.rookieYear === g.year);
-  const roy = rookies.length
-    ? topBy(rookies, x => x.ptsPg * 1.0 + x.astPg * 0.45 + (x.player.ovr || 70) * 0.2)
-    : null;
+  
+  // --- FIX ROY ---
+  // Try to find rookies with decent GP
+  let rookies = played.filter(x => x.player.rookieYear === g.year);
+  
+  // Fallback: If no rookies qualified via GP (e.g. simulated stats were weird), 
+  // loosen the GP filter to just anyone with the rookieYear flag.
+  if (rookies.length === 0) {
+      rookies = all.filter(x => x.player.rookieYear === g.year);
+  }
+
+  const roy = topBy(rookies, x => x.ptsPg * 1.0 + x.astPg * 0.45 + (x.player.ovr || 70) * 0.2);
+  // --------------
 
   return {
     MVP: packAward(mvp),
     OPOY: packAward(opoy),
     DPOY: packAward(dpoy),
-    ROY: roy ? packAward(roy) : null
+    ROY: roy ? packAward(roy) : { player: "None", team: "-" } // Fallback display
   };
 }
 
