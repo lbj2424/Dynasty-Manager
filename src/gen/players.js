@@ -24,8 +24,29 @@ export function generateTeamRoster({ teamName, teamRating, year=1, seed="roster"
   const quality = clamp((teamRating - 60) / 35, 0, 1);
 
   const genPlayer = (targetPos, minOvr, maxOvr) => {
-      const ovr = clamp(Math.floor(minOvr + r()*(maxOvr - minOvr + 1)), 60, 99);
+      // 1. Generate Base OVR
+      const baseOvr = clamp(Math.floor(minOvr + r()*(maxOvr - minOvr + 1)), 60, 99);
       
+      // 2. Determine Archetype & Split Attributes
+      // Roll for type: 0=Balanced, 1=Offensive, 2=Defensive
+      const typeRoll = r(); 
+      let off = baseOvr;
+      let def = baseOvr;
+      
+      if (typeRoll < 0.4) { 
+          // Offensive Specialist (+6 Off, -6 Def)
+          off = Math.min(99, baseOvr + 6);
+          def = Math.max(40, baseOvr - 6);
+      } else if (typeRoll < 0.7) {
+          // Defensive Specialist (-6 Off, +6 Def)
+          off = Math.max(40, baseOvr - 6);
+          def = Math.min(99, baseOvr + 6);
+      }
+      // Else Balanced (keep equal)
+
+      // Recalculate OVR from the split
+      const finalOvr = Math.round((off + def) / 2);
+
       const rand = r();
       let age;
       if (rand < 0.15) age = 19 + Math.floor(r()*3);
@@ -38,33 +59,32 @@ export function generateTeamRoster({ teamName, teamRating, year=1, seed="roster"
       else if (age > 29) pot = pick(["C","C","D","F"], r);
       else pot = pick(["A","B","C","C","D"], r);
 
-      const salary = calculateSalary(ovr, age);
+      const salary = calculateSalary(finalOvr, age);
 
-      // --- ROY FIX: If Year 1 and young, mark as Rookie ---
       let rookieYear = null;
       if (year === 1 && age <= 21 && r() < 0.3) {
           rookieYear = 1;
       }
-      // ----------------------------------------------------
 
       return {
           id: id("pl", r),
           name: `${pick(FIRST, r)} ${pick(LAST, r)}`,
           pos: targetPos,
           age,
-          ovr,
+          ovr: finalOvr,
+          off, // New
+          def, // New
           potentialGrade: pot,
           happiness: 70,
           dev: { focus: "Balanced", points: 0 },
           contract: { years: 1 + Math.floor(r()*4), salary },
           stats: { gp:0, pts:0, reb:0, ast:0 },
           rotation: { minutes: 0, isStarter: false },
-          careerStats: [], // Ensure history exists
+          careerStats: [],
           rookieYear 
       };
   };
 
-  // --- POSITIONAL BALANCE ---
   for (const pos of POS) {
       roster.push(genPlayer(pos, 75 + 10*quality, 85 + 10*quality));
       roster.push(genPlayer(pos, 65 + 5*quality, 74 + 5*quality));
