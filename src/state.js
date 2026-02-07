@@ -18,13 +18,33 @@ let STATE = null;
 
 export function getState(){ return STATE; }
 
-// -------------------- INITIALIZATION --------------------
+// -------------------- INITIALIZATION & REPAIR --------------------
 
 export function ensureAppState(loadedOrNull){
   if (loadedOrNull){
     STATE = loadedOrNull;
     STATE.game.history ??= [];
     STATE.game.retiredPlayers ??= []; 
+
+    // --- FIX FOR BROKEN INTL SCOUTING (BACKFILL KEYS) ---
+    if (STATE.game.scouting && STATE.game.scouting.intlPool) {
+        const MAP = {
+            "France": "EU", "Spain": "EU", "Serbia": "EU", "Slovenia": "EU", "Germany": "EU",
+            "Lithuania": "EU", "Turkey": "EU", "Greece": "EU", "Italy": "EU",
+            "Canada": "NA",
+            "Brazil": "SA", "Argentina": "SA",
+            "Nigeria": "AF",
+            "China": "AS", "Japan": "AS",
+            "Australia": "OC"
+        };
+        for (const p of STATE.game.scouting.intlPool) {
+            // If missing key, derive it from continentName (which holds the country)
+            if (!p.continentKey && p.continentName) {
+                p.continentKey = MAP[p.continentName] || "EU";
+            }
+        }
+    }
+    // ----------------------------------------------------
 
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0;
@@ -45,7 +65,6 @@ export function ensureAppState(loadedOrNull){
       });
 
       if (needsRotationFix) autoDistributeMinutes(t);
-      updateTeamRating(t); // <--- FIX: Update ratings on load
       recalcPayroll(t);
     });
     return;
@@ -65,7 +84,6 @@ export function newGameState({ userTeamIndex=0 } = {}){
     t.cap.cap ??= SALARY_CAP;
 
     autoDistributeMinutes(t);
-    updateTeamRating(t); // <--- FIX: Calc initial rating from players
     recalcPayroll(t);
 
     if (t.cap.payroll > t.cap.cap) {
@@ -113,22 +131,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   };
 }
 
-// -------------------- LOGIC HELPERS --------------------
-
-// --- NEW: Calculate Team Rating based on Top 8 Players ---
-function updateTeamRating(team) {
-    if (!team.roster || team.roster.length === 0) {
-        team.rating = 60;
-        return;
-    }
-    // Sort by OVR
-    const top8 = team.roster.slice().sort((a,b) => b.ovr - a.ovr).slice(0, 8);
-    const total = top8.reduce((sum, p) => sum + p.ovr, 0);
-    // Average
-    team.rating = Math.round(total / Math.max(1, top8.length));
-}
-
-// -------------------- FREE AGENCY --------------------
+// -------------------- FREE AGENCY LOGIC --------------------
 
 export function startFreeAgency(){
   const g = STATE.game;
@@ -305,7 +308,7 @@ function processEndSeasonRoster(g){
     t.roster = nextRoster;
     autoDistributeMinutes(t);
     recalcPayroll(t);
-    updateTeamRating(t); // <--- FIX: Update ratings after progression/retirement
+    updateTeamRating(t);
   }
 }
 
@@ -442,7 +445,7 @@ export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
     recalcPayroll(otherTeam);
     autoDistributeMinutes(userTeam);
     autoDistributeMinutes(otherTeam);
-    updateTeamRating(userTeam); // <--- FIX: Update ratings after trade
+    updateTeamRating(userTeam);
     updateTeamRating(otherTeam);
 
     return true;
@@ -456,7 +459,7 @@ export function releasePlayer(teamId, playerId){
     if (idx === -1) return;
     team.roster.splice(idx, 1);
     recalcPayroll(team);
-    updateTeamRating(team); // <--- FIX: Update rating after cut
+    updateTeamRating(team);
 }
 
 export function setActiveSaveSlot(slot){
@@ -672,7 +675,6 @@ export function startPlayoffs(){
   g.inbox.unshift({ t: Date.now(), msg: "Playoffs started (Top 8 East/West)." });
 }
 
-// --- FIX: Playoff Simulation now calculates scores instead of coin flips ---
 export function simPlayoffRound(){
   const g = STATE.game;
   if (g.phase !== PHASES.PLAYOFFS) return;
@@ -687,16 +689,13 @@ export function simPlayoffRound(){
   for (const s of allSeries){
     if (s.done) continue;
 
-    // Simulate entire series in one go
     const teamA = g.league.teams.find(t => t.id === s.a);
     const teamB = g.league.teams.find(t => t.id === s.b);
 
     while (s.aWins < 4 && s.bWins < 4){
-        // Simulate a single game using the real engine
         let ptsA = simTeamStats(teamA);
         let ptsB = simTeamStats(teamB);
         
-        // Prevent ties
         while (ptsA === ptsB) {
             ptsA += Math.floor(Math.random() * 6);
             ptsB += Math.floor(Math.random() * 6);
@@ -950,4 +949,14 @@ function topBy(arr, scoreFn){
     }
   }
   return best;
+}
+
+function updateTeamRating(team) {
+    if (!team.roster || team.roster.length === 0) {
+        team.rating = 60;
+        return;
+    }
+    const top8 = team.roster.slice().sort((a,b) => b.ovr - a.ovr).slice(0, 8);
+    const total = top8.reduce((sum, p) => sum + p.ovr, 0);
+    team.rating = Math.round(total / Math.max(1, top8.length));
 }
