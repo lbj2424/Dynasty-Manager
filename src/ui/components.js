@@ -1,3 +1,4 @@
+// ... (el, card, badge, button, interestBar, tabs functions remain same) ...
 export function el(tag, attrs={}, children=[]){
   const node = document.createElement(tag);
   for (const [k,v] of Object.entries(attrs || {})){
@@ -62,17 +63,20 @@ export function tabs(items, activeKey, onPick){
   );
 }
 
-// --- NEW PLAYER MODAL ---
 export function showPlayerModal(player) {
     const overlay = el("div", { 
         style: "position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); z-index:999; display:flex; justify-content:center; align-items:center;" 
     }, []);
 
-    const close = () => document.body.removeChild(overlay);
+    const close = () => {
+        if(document.body.contains(overlay)) document.body.removeChild(overlay);
+    };
     overlay.onclick = (e) => { if(e.target === overlay) close(); };
 
-    // History Table
-    const historyRows = (player.careerStats || []).map(h => el("tr", {}, [
+    // --- FIX: Handle undefined history ---
+    const stats = player.careerStats || [];
+    
+    const historyRows = stats.map(h => el("tr", {}, [
         el("td", {}, String(h.year)),
         el("td", {}, h.teamName || "-"),
         el("td", {}, String(h.ovr)),
@@ -94,7 +98,7 @@ export function showPlayerModal(player) {
             el("div", { class:"h2" }, player.name),
             button("Close", { onClick: close, small:true })
         ]),
-        el("div", { class:"p" }, `${player.pos} • ${player.age} yrs • ${player.ovr} OVR • Pot: ${player.potentialGrade}`),
+        el("div", { class:"p" }, `${player.pos} • ${player.age || "??"} yrs • ${player.ovr} OVR • Pot: ${player.potentialGrade}`),
         el("div", { class:"sep" }),
         el("div", { class:"h2" }, "Career History"),
         el("table", { class:"table" }, [
