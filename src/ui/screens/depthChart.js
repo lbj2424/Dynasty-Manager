@@ -6,18 +6,15 @@ export function DepthChartScreen(){
   const g = s.game;
   const team = g.league.teams[g.userTeamIndex];
 
-  // Ensure everyone has rotation object
   team.roster.forEach(p => {
       p.rotation ??= { minutes: 0, isStarter: false };
   });
 
   const root = el("div", {}, []);
 
-  // Calculation
   const totalMins = team.roster.reduce((sum, p) => sum + (p.rotation.minutes || 0), 0);
-  const MAX_MINS = 205; 
+  const MAX_MINS = 220; // <--- CHANGED TO 220
   
-  // Count starters by position
   const starters = { PG:0, SG:0, SF:0, PF:0, C:0 };
   let starterCount = 0;
   team.roster.forEach(p => {
@@ -28,7 +25,6 @@ export function DepthChartScreen(){
   });
 
   const statusColor = totalMins === MAX_MINS ? "var(--good)" : totalMins > MAX_MINS ? "var(--bad)" : "var(--warn)";
-  // Valid lineup = exactly 1 at each position
   const isValidLineup = starters.PG===1 && starters.SG===1 && starters.SF===1 && starters.PF===1 && starters.C===1;
   const starterColor = isValidLineup ? "var(--good)" : "var(--bad)";
   
@@ -44,9 +40,6 @@ export function DepthChartScreen(){
       el("div", { class:"row" }, [
         button("Auto-Distribute", {
             onClick: () => {
-                // We need to import the new autoDistribute logic from state or replicate it here. 
-                // Since this file can't import the helper from state easily without exporting it,
-                // I will include the logic locally here for the UI button.
                 autoDistributeUI(team); 
                 rerender(root);
             }
@@ -63,7 +56,6 @@ export function DepthChartScreen(){
       ])
   ]));
 
-  // Roster List Sorted by Position then OVR
   const posOrder = { "PG":1, "SG":2, "SF":3, "PF":4, "C":5 };
   const sortedRoster = team.roster.slice().sort((a,b) => {
       if (posOrder[a.pos] !== posOrder[b.pos]) return posOrder[a.pos] - posOrder[b.pos];
@@ -91,7 +83,6 @@ export function DepthChartScreen(){
       const startCheck = el("input", { type:"checkbox", checked: !!p.rotation.isStarter });
       startCheck.onchange = (e) => {
           if (e.target.checked) {
-              // Uncheck everyone else of this position
               team.roster.forEach(other => {
                   if (other.pos === p.pos && other.id !== p.id) {
                       other.rotation.isStarter = false;
@@ -135,13 +126,11 @@ export function DepthChartScreen(){
   return root;
 }
 
-// Local version for the UI button
 function autoDistributeUI(team){
     team.roster.forEach(p => { p.rotation = { minutes: 0, isStarter: false }; });
-    let remain = 205; 
+    let remain = 220; // <--- CHANGED TO 220
     const positions = ["PG","SG","SF","PF","C"];
     
-    // Starters
     for (const pos of positions) {
         const candidates = team.roster
             .filter(p => p.pos === pos && !p.rotation.isStarter)
@@ -153,13 +142,11 @@ function autoDistributeUI(team){
             remain -= 34;
         }
     }
-    // Bench
     const bench = team.roster.filter(p => !p.rotation.isStarter).sort((a,b) => b.ovr - a.ovr);
     for (let i = 0; i < Math.min(5, bench.length); i++) {
         bench[i].rotation.minutes = 10;
         remain -= 10;
     }
-    // Remainder
     const best = team.roster.sort((a,b)=>b.ovr-a.ovr)[0];
     if(best && remain > 0) best.rotation.minutes += remain;
 }
