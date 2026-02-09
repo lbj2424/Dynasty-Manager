@@ -103,7 +103,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.6.0", createdAt: Date.now() },
+    meta: { version: "0.6.1", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -879,6 +879,12 @@ export function advanceToNextYear(){
   g.scouting.intlLocation = null;
 
   for (const t of g.league.teams){
+    // --- FIX: REMOVE EXPIRED PICKS (Keep only g.year and future) ---
+    if (t.assets && t.assets.picks) {
+        t.assets.picks = t.assets.picks.filter(p => p.year >= g.year);
+    }
+    // ---------------------------------------------------------------
+
     if (!t.assets) t.assets = { picks: [] };
     const newYear = g.year + 3;
     t.assets.picks.push({ id: `pick_${t.id}_${newYear}_1`, originalOwnerId: t.id, year: newYear, round: 1 });
