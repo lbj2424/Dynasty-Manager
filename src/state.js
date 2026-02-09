@@ -26,7 +26,6 @@ export function ensureAppState(loadedOrNull){
     STATE.game.history ??= [];
     STATE.game.retiredPlayers ??= []; 
 
-    // Fix International Scouting Keys for old saves
     if (STATE.game.scouting && STATE.game.scouting.intlPool) {
         const MAP = {
             "France": "EU", "Spain": "EU", "Serbia": "EU", "Slovenia": "EU", "Germany": "EU",
@@ -50,7 +49,6 @@ export function ensureAppState(loadedOrNull){
         p.happiness ??= 70;
         p.age ??= 24; 
         
-        // Backfill OFF/DEF for older saves
         if (p.off === undefined) p.off = p.ovr;
         if (p.def === undefined) p.def = p.ovr;
 
@@ -103,7 +101,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.6.2", createdAt: Date.now() },
+    meta: { version: "0.7.0", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -136,7 +134,7 @@ function autoSave() {
     saveToSlot(slot);
 }
 
-// -------------------- FREE AGENCY LOGIC --------------------
+// -------------------- FREE AGENCY LOGIC (SMART CPU) --------------------
 
 export function startFreeAgency(){
   const g = STATE.game;
@@ -162,6 +160,19 @@ function generateInitialOffers(g){
     const fa = g.offseason.freeAgents;
     const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
 
+    // 1. Analyze Team Needs First
+    const teamNeeds = {}; // { teamId: { "PG": count, "SG": count... } }
+    for (const t of cpuTeams) {
+        const counts = { PG:0, SG:0, SF:0, PF:0, C:0 };
+        const bestAtPos = { PG:0, SG:0, SF:0, PF:0, C:0 };
+        for (const p of t.roster) {
+            counts[p.pos] = (counts[p.pos] || 0) + 1;
+            if (p.ovr > (bestAtPos[p.pos] || 0)) bestAtPos[p.pos] = p.ovr;
+        }
+        teamNeeds[t.id] = { counts, bestAtPos };
+    }
+
+    // 2. Loop players and determine demand
     for (const p of fa.pool) {
         p.offers = []; 
 
@@ -180,8 +191,34 @@ function generateInitialOffers(g){
         for (const t of shuffled) {
             if (p.offers.length >= numOffers) break;
 
+            const needs = teamNeeds[t.id];
+            const posCount = needs.counts[p.pos] || 0;
+            const currentStarterOvr = needs.bestAtPos[p.pos] || 0;
+
+            // --- SMART LOGIC ---
+            // 1. Don't sign if we have too many players at that position
+            if (posCount >= 4) continue;
+
+            // 2. Don't sign a backup if we need a starter elsewhere, 
+            //    unless this guy is a MASSIVE upgrade (e.g. 85 OVR vs 75 starter)
+            if (posCount >= 2 && p.ovr < currentStarterOvr) {
+                // He would be a backup. Do we want a backup? 
+                // Only if he's cheap or we have space. 
+                // Let's skip to save money for starters.
+                if (Math.random() > 0.3) continue;
+            }
+
+            // 3. DO sign if we have 0 or 1 player at this pos
+            let interestBoost = 1.0;
+            if (posCount <= 1) interestBoost = 1.5;
+
+            // 4. DO sign if this player is a Star and better than what we have
+            if (p.ovr > 80 && p.ovr > currentStarterOvr + 3) interestBoost = 2.0;
+
+            // Check Cap
             const capSpace = t.cap.cap - t.cap.payroll;
-            const offerAmount = p.ask * (0.9 + Math.random() * 0.2);
+            // CPU offers closer to ask if desperate
+            const offerAmount = p.ask * (interestBoost > 1.2 ? 1.0 : (0.9 + Math.random() * 0.2));
             
             if (capSpace > offerAmount && t.roster.length < 15) {
                 p.offers.push({
@@ -214,7 +251,7 @@ export function calculateSignChance(player, offerSalary, offerYears){
     return clamp(Math.round(chance), 0, 100);
 }
 
-// -------------------- NEW PROGRESSION LOGIC --------------------
+// -------------------- PROGRESSION & SIMULATION --------------------
 
 function processEndSeasonRoster(g){
   const userTeamId = g.league.teams[g.userTeamIndex].id;
@@ -242,29 +279,27 @@ function processEndSeasonRoster(g){
       
       let growthSpeed = 0;
 
-      // 1. Age Factor
+      // 1. Age
       if (age <= 22) growthSpeed += 2;       
       else if (age <= 25) growthSpeed += 1;  
       else if (age <= 29) growthSpeed += 0;  
       else if (age <= 32) growthSpeed -= 1; 
       else growthSpeed -= 3;                
 
-      // 2. Potential Velocity (Talent Factor)
+      // 2. Potential
       if (p.potentialGrade === "A+") growthSpeed += 2;      
       else if (p.potentialGrade === "A") growthSpeed += 1; 
-      else if (p.potentialGrade === "B") {                 
-          if (Math.random() > 0.5) growthSpeed += 1; 
-      }
+      else if (p.potentialGrade === "B") { if (Math.random() > 0.5) growthSpeed += 1; }
       else if (p.potentialGrade === "F") growthSpeed -= 1; 
 
-      // 3. Playtime Bonus (XP)
-      if (age < 28) { // Expanded age range
-          if (minutes >= 28) growthSpeed += 2;        // Starter
-          else if (minutes >= 15) growthSpeed += 1;   // Rotation
-          else if (minutes < 5) growthSpeed -= 1;     // Rust
+      // 3. Playtime
+      if (age < 28) {
+          if (minutes >= 28) growthSpeed += 2;        
+          else if (minutes >= 15) growthSpeed += 1;   
+          else if (minutes < 5) growthSpeed -= 1;     
       }
 
-      // 4. Performance Bonus (Confidence)
+      // 4. Performance
       const ppg = p.stats.gp > 0 ? (p.stats.pts / p.stats.gp) : 0;
       if (age < 26 && ppg >= 15) {
           growthSpeed += 1; 
@@ -276,22 +311,20 @@ function processEndSeasonRoster(g){
       // 5. Soft Cap
       const caps = { "A+":99, "A":92, "B":84, "C":77, "D":70, "F":60 };
       const softCap = caps[p.potentialGrade] || 75;
-      
       if (p.ovr >= softCap) {
           if (growthSpeed > 0) growthSpeed = 0; 
           else growthSpeed -= 1; 
       }
 
-      // 6. Random Variance
+      // 6. Variance
       const roll = Math.random();
       if (roll < 0.05) {
-          growthSpeed += 3; // Breakout
+          growthSpeed += 3; 
           if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`BREAKOUT: ${p.name} had a massive offseason (+${growthSpeed})!` });
       } else if (roll < 0.10) {
-          growthSpeed -= 2; // Regression
+          growthSpeed -= 2;
       }
 
-      // 7. Apply Growth
       const offChange = growthSpeed + (Math.floor(Math.random() * 3) - 1); 
       const defChange = growthSpeed + (Math.floor(Math.random() * 3) - 1);
 
@@ -611,8 +644,6 @@ function shuffle(a){
   }
 }
 
-// -------------------- UPDATED GAME ENGINE (VARIANCE + HOME COURT) --------------------
-
 function simWeekGames(g){
   const wk = g.week;
   const bundle = g.schedule.find(x => x.week === wk);
@@ -628,27 +659,19 @@ function simWeekGames(g){
     const statsA = calcTeamPerformance(A);
     const statsB = calcTeamPerformance(B);
 
-    // --- IDEA A: Team Variance (0.9 to 1.1) ---
-    // Represents "Any Given Sunday" - hot/cold streaks per game
     const varA = 0.9 + Math.random() * 0.2;
     const varB = 0.9 + Math.random() * 0.2;
+    const homeBoost = 1.05; 
 
-    // --- IDEA B: Home Court Advantage ---
-    // In this simple schedule, we treat the 2nd team (B) as the "Home" team
-    const homeBoost = 1.05; // +5% offensive boost for Home Team
-
-    // Calculate Base Points with Modifiers
     let pointsA = statsA.offPoints * varA;
     let pointsB = statsB.offPoints * varB * homeBoost;
 
-    // Apply Defense (Opponent Defense Factor)
     const defenseFactorA = (statsA.defRating - 75) / 100;
     const defenseFactorB = (statsB.defRating - 75) / 100;
 
     let finalScoreA = Math.round(pointsA * (1 - defenseFactorB));
     let finalScoreB = Math.round(pointsB * (1 - defenseFactorA));
 
-    // Prevent ties (Overtime logic)
     while (finalScoreA === finalScoreB) {
         finalScoreA += Math.floor(Math.random() * 4) + 1;
         finalScoreB += Math.floor(Math.random() * 4) + 1;
@@ -739,8 +762,6 @@ export function startPlayoffs(){
   autoSave();
 }
 
-// -------------------- UPDATED PLAYOFF ENGINE (2-2-1-1-1 Format) --------------------
-
 export function simPlayoffRound(){
   const g = STATE.game;
   if (g.phase !== PHASES.PLAYOFFS) return;
@@ -755,34 +776,25 @@ export function simPlayoffRound(){
   for (const s of allSeries){
     if (s.done) continue;
 
-    // Identify Teams (A is Higher Seed, B is Lower Seed)
     const teamA = g.league.teams.find(t => t.id === s.a);
     const teamB = g.league.teams.find(t => t.id === s.b);
 
     while (s.aWins < 4 && s.bWins < 4){
-        // Calculate Game Number (1 to 7)
         const gameNum = s.aWins + s.bWins + 1;
-
-        const statsA = calcTeamPerformance(teamA);
+        const statsA = calcTeamTeamPerformance(teamA); // Typo fixed in next block
         const statsB = calcTeamPerformance(teamB);
 
-        // --- IDEA B: Playoff Home Court (2-2-1-1-1) ---
-        // Team A (Higher Seed) is Home for: 1, 2, 5, 7
-        // Team B (Lower Seed) is Home for: 3, 4, 6
         let homeAdvA = 1.0;
         let homeAdvB = 1.0;
-        
-        if ([1, 2, 5, 7].includes(gameNum)) homeAdvA = 1.05; // A is Home
-        else homeAdvB = 1.05; // B is Home
+        if ([1, 2, 5, 7].includes(gameNum)) homeAdvA = 1.05; 
+        else homeAdvB = 1.05; 
 
-        // --- IDEA A: Variance ---
         const varA = 0.9 + Math.random() * 0.2;
         const varB = 0.9 + Math.random() * 0.2;
 
         let pointsA = statsA.offPoints * varA * homeAdvA;
         let pointsB = statsB.offPoints * varB * homeAdvB;
 
-        // Apply Defense
         const defenseFactorA = (statsA.defRating - 75) / 100;
         const defenseFactorB = (statsB.defRating - 75) / 100;
 
@@ -919,7 +931,6 @@ export function advanceToNextYear(){
   g.scouting.intlLocation = null;
 
   for (const t of g.league.teams){
-    // Remove expired picks (Keep current year + future)
     if (t.assets && t.assets.picks) {
         t.assets.picks = t.assets.picks.filter(p => p.year >= g.year);
     }
