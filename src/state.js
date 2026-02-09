@@ -103,7 +103,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.6.1", createdAt: Date.now() },
+    meta: { version: "0.6.2", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -611,6 +611,8 @@ function shuffle(a){
   }
 }
 
+// -------------------- UPDATED GAME ENGINE (VARIANCE + HOME COURT) --------------------
+
 function simWeekGames(g){
   const wk = g.week;
   const bundle = g.schedule.find(x => x.week === wk);
@@ -626,12 +628,27 @@ function simWeekGames(g){
     const statsA = calcTeamPerformance(A);
     const statsB = calcTeamPerformance(B);
 
+    // --- IDEA A: Team Variance (0.9 to 1.1) ---
+    // Represents "Any Given Sunday" - hot/cold streaks per game
+    const varA = 0.9 + Math.random() * 0.2;
+    const varB = 0.9 + Math.random() * 0.2;
+
+    // --- IDEA B: Home Court Advantage ---
+    // In this simple schedule, we treat the 2nd team (B) as the "Home" team
+    const homeBoost = 1.05; // +5% offensive boost for Home Team
+
+    // Calculate Base Points with Modifiers
+    let pointsA = statsA.offPoints * varA;
+    let pointsB = statsB.offPoints * varB * homeBoost;
+
+    // Apply Defense (Opponent Defense Factor)
     const defenseFactorA = (statsA.defRating - 75) / 100;
     const defenseFactorB = (statsB.defRating - 75) / 100;
 
-    let finalScoreA = Math.round(statsA.offPoints * (1 - defenseFactorB));
-    let finalScoreB = Math.round(statsB.offPoints * (1 - defenseFactorA));
+    let finalScoreA = Math.round(pointsA * (1 - defenseFactorB));
+    let finalScoreB = Math.round(pointsB * (1 - defenseFactorA));
 
+    // Prevent ties (Overtime logic)
     while (finalScoreA === finalScoreB) {
         finalScoreA += Math.floor(Math.random() * 4) + 1;
         finalScoreB += Math.floor(Math.random() * 4) + 1;
@@ -722,6 +739,8 @@ export function startPlayoffs(){
   autoSave();
 }
 
+// -------------------- UPDATED PLAYOFF ENGINE (2-2-1-1-1 Format) --------------------
+
 export function simPlayoffRound(){
   const g = STATE.game;
   if (g.phase !== PHASES.PLAYOFFS) return;
@@ -736,18 +755,39 @@ export function simPlayoffRound(){
   for (const s of allSeries){
     if (s.done) continue;
 
+    // Identify Teams (A is Higher Seed, B is Lower Seed)
     const teamA = g.league.teams.find(t => t.id === s.a);
     const teamB = g.league.teams.find(t => t.id === s.b);
 
     while (s.aWins < 4 && s.bWins < 4){
+        // Calculate Game Number (1 to 7)
+        const gameNum = s.aWins + s.bWins + 1;
+
         const statsA = calcTeamPerformance(teamA);
         const statsB = calcTeamPerformance(teamB);
 
+        // --- IDEA B: Playoff Home Court (2-2-1-1-1) ---
+        // Team A (Higher Seed) is Home for: 1, 2, 5, 7
+        // Team B (Lower Seed) is Home for: 3, 4, 6
+        let homeAdvA = 1.0;
+        let homeAdvB = 1.0;
+        
+        if ([1, 2, 5, 7].includes(gameNum)) homeAdvA = 1.05; // A is Home
+        else homeAdvB = 1.05; // B is Home
+
+        // --- IDEA A: Variance ---
+        const varA = 0.9 + Math.random() * 0.2;
+        const varB = 0.9 + Math.random() * 0.2;
+
+        let pointsA = statsA.offPoints * varA * homeAdvA;
+        let pointsB = statsB.offPoints * varB * homeAdvB;
+
+        // Apply Defense
         const defenseFactorA = (statsA.defRating - 75) / 100;
         const defenseFactorB = (statsB.defRating - 75) / 100;
 
-        let finalScoreA = Math.round(statsA.offPoints * (1 - defenseFactorB));
-        let finalScoreB = Math.round(statsB.offPoints * (1 - defenseFactorA));
+        let finalScoreA = Math.round(pointsA * (1 - defenseFactorB));
+        let finalScoreB = Math.round(pointsB * (1 - defenseFactorA));
         
         while (finalScoreA === finalScoreB) {
             finalScoreA += Math.floor(Math.random() * 4) + 1;
@@ -879,11 +919,10 @@ export function advanceToNextYear(){
   g.scouting.intlLocation = null;
 
   for (const t of g.league.teams){
-    // --- FIX: REMOVE EXPIRED PICKS (Keep only g.year and future) ---
+    // Remove expired picks (Keep current year + future)
     if (t.assets && t.assets.picks) {
         t.assets.picks = t.assets.picks.filter(p => p.year >= g.year);
     }
-    // ---------------------------------------------------------------
 
     if (!t.assets) t.assets = { picks: [] };
     const newYear = g.year + 3;
