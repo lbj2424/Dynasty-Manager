@@ -178,8 +178,7 @@ function makePick(d, teamId, prospect, g){
   if (team){
     const rookieSalary = round === 1 ? 4.0 : 1.5;
     
-    // --- FIX: GENERATE OFF/DEF FOR ROOKIES ---
-    // Since prospects track 'currentOVR', we split it into OFF/DEF now
+    // Generate OFF/DEF for rookies
     const typeRoll = Math.random();
     let off = prospect.currentOVR; 
     let def = prospect.currentOVR;
@@ -197,18 +196,19 @@ function makePick(d, teamId, prospect, g){
     off = clamp(off, 40, 99);
     def = clamp(def, 40, 99);
     const finalOvr = Math.round((off + def)/2);
-    // -----------------------------------------
 
     team.roster.push({
       id: prospect.id,
       name: prospect.name,
       pos: prospect.pos,
       ovr: finalOvr,
-      off: off, // NEW
-      def: def, // NEW
-      age: prospect.age || 20, // FIX: Fallback just in case
+      off: off, 
+      def: def, 
+      age: prospect.age || 20,
       potentialGrade: prospect.potentialGrade,
-      rookieYear: g.year, 
+      // --- FIX: Rookie Year is NEXT Season ---
+      rookieYear: g.year + 1, 
+      // ---------------------------------------
       happiness: 70,
       dev: { focus: "Overall", points: 7 },
       promisedRole: "Reserve",
