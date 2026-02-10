@@ -101,7 +101,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.7.0", createdAt: Date.now() },
+    meta: { version: "0.7.1", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -160,8 +160,7 @@ function generateInitialOffers(g){
     const fa = g.offseason.freeAgents;
     const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
 
-    // 1. Analyze Team Needs First
-    const teamNeeds = {}; // { teamId: { "PG": count, "SG": count... } }
+    const teamNeeds = {}; 
     for (const t of cpuTeams) {
         const counts = { PG:0, SG:0, SF:0, PF:0, C:0 };
         const bestAtPos = { PG:0, SG:0, SF:0, PF:0, C:0 };
@@ -172,7 +171,6 @@ function generateInitialOffers(g){
         teamNeeds[t.id] = { counts, bestAtPos };
     }
 
-    // 2. Loop players and determine demand
     for (const p of fa.pool) {
         p.offers = []; 
 
@@ -195,29 +193,17 @@ function generateInitialOffers(g){
             const posCount = needs.counts[p.pos] || 0;
             const currentStarterOvr = needs.bestAtPos[p.pos] || 0;
 
-            // --- SMART LOGIC ---
-            // 1. Don't sign if we have too many players at that position
             if (posCount >= 4) continue;
 
-            // 2. Don't sign a backup if we need a starter elsewhere, 
-            //    unless this guy is a MASSIVE upgrade (e.g. 85 OVR vs 75 starter)
             if (posCount >= 2 && p.ovr < currentStarterOvr) {
-                // He would be a backup. Do we want a backup? 
-                // Only if he's cheap or we have space. 
-                // Let's skip to save money for starters.
                 if (Math.random() > 0.3) continue;
             }
 
-            // 3. DO sign if we have 0 or 1 player at this pos
             let interestBoost = 1.0;
             if (posCount <= 1) interestBoost = 1.5;
-
-            // 4. DO sign if this player is a Star and better than what we have
             if (p.ovr > 80 && p.ovr > currentStarterOvr + 3) interestBoost = 2.0;
 
-            // Check Cap
             const capSpace = t.cap.cap - t.cap.payroll;
-            // CPU offers closer to ask if desperate
             const offerAmount = p.ask * (interestBoost > 1.2 ? 1.0 : (0.9 + Math.random() * 0.2));
             
             if (capSpace > offerAmount && t.roster.length < 15) {
@@ -781,7 +767,7 @@ export function simPlayoffRound(){
 
     while (s.aWins < 4 && s.bWins < 4){
         const gameNum = s.aWins + s.bWins + 1;
-        const statsA = calcTeamTeamPerformance(teamA); // Typo fixed in next block
+        const statsA = calcTeamPerformance(teamA); // Typo Fixed
         const statsB = calcTeamPerformance(teamB);
 
         let homeAdvA = 1.0;
@@ -931,6 +917,7 @@ export function advanceToNextYear(){
   g.scouting.intlLocation = null;
 
   for (const t of g.league.teams){
+    // Remove expired picks (Keep current year + future)
     if (t.assets && t.assets.picks) {
         t.assets.picks = t.assets.picks.filter(p => p.year >= g.year);
     }
