@@ -46,6 +46,7 @@ export function ensureAppState(loadedOrNull){
       t.roster?.forEach(p => {
         p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
         p.careerStats ??= []; 
+        p.awards ??= []; // FIX: Initialize awards array
         p.happiness ??= 70;
         p.age ??= 24; 
         
@@ -68,7 +69,7 @@ export function ensureAppState(loadedOrNull){
 }
 
 export function newGameState({ userTeamIndex=0 } = {}){
-  const year = 2020; // FIX: Start game at year 2020
+  const year = 2020; 
   const league = generateLeague({ seed: "v1_seed" });
 
   for (const t of league.teams){
@@ -77,6 +78,9 @@ export function newGameState({ userTeamIndex=0 } = {}){
     t.roster = generateTeamRoster({ teamName: t.name, teamRating: t.rating, year }) || [];
     t.cap ??= { cap: SALARY_CAP, payroll: 0 };
     t.cap.cap ??= SALARY_CAP;
+
+    // Ensure initial gen has awards array
+    t.roster.forEach(p => p.awards = []);
 
     autoDistributeMinutes(t);
     recalcPayroll(t);
@@ -101,7 +105,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.8.0", createdAt: Date.now() },
+    meta: { version: "0.9.0", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -133,6 +137,55 @@ function autoSave() {
     const slot = getActiveSaveSlot() || "A";
     saveToSlot(slot);
 }
+
+// -------------------- ALL-STAR LOGIC --------------------
+
+export function calculateAllStars(g) {
+    const allPlayers = [];
+    for (const t of g.league.teams) {
+        for (const p of (t.roster || [])) {
+            const gp = p.stats?.gp || 0;
+            if (gp < 5) continue; // Minimum games
+            const ptsPg = p.stats.pts / gp;
+            const rebPg = p.stats.reb / gp;
+            const astPg = p.stats.ast / gp;
+            
+            // Score = Stats + Team Wins Bonus + OVR proxy
+            const score = (ptsPg * 1.0) + (astPg * 0.6) + (rebPg * 0.5) + (t.wins * 0.5) + (p.ovr * 0.2);
+            allPlayers.push({ player: p, score, conf: t.conference, teamName: t.name });
+        }
+    }
+
+    const selectForConf = (conf) => {
+        const confPlayers = allPlayers.filter(x => x.conf === conf).sort((a, b) => b.score - a.score);
+        const selected = [];
+        const posCounts = { PG:0, SG:0, SF:0, PF:0, C:0 };
+
+        // Need exactly 3 per position (3 x 5 = 15 roster spots)
+        for (const cand of confPlayers) {
+            const pos = cand.player.pos;
+            if (posCounts[pos] < 3) {
+                selected.push({ ...cand.player, teamName: cand.teamName });
+                posCounts[pos]++;
+                
+                // Add Award to player model
+                cand.player.awards ??= [];
+                const awardStr = `${g.year} All-Star`;
+                if (!cand.player.awards.includes(awardStr)) {
+                    cand.player.awards.push(awardStr);
+                }
+            }
+            if (selected.length === 15) break;
+        }
+        return selected;
+    };
+
+    return {
+        east: selectForConf("EAST"),
+        west: selectForConf("WEST")
+    };
+}
+
 
 // -------------------- FREE AGENCY LOGIC (SMART CPU) --------------------
 
@@ -247,7 +300,6 @@ function processEndSeasonRoster(g){
     const nextRoster = [];
     
     for(const p of t.roster){
-      // FIX: Always record history even if GP is 0
       p.careerStats ??= [];
       p.careerStats.push({
           year: g.year,
@@ -360,7 +412,6 @@ function processEndSeasonRoster(g){
   }
 }
 
-// FIX: Added 'execute' parameter to allow for confirmation previews
 export function negotiateExtension(teamId, playerId, execute = true){
     const g = STATE.game;
     const team = g.league.teams.find(t => t.id === teamId);
@@ -576,17 +627,20 @@ export function advanceWeek(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
   
-  simWeekGames(g);
-  simCpuTrades(g); 
+  // NOTE: If week is > seasonWeeks, we shouldn't sim games. 
+  // It means we are at the "End of Season" checkpoint waiting for user to start playoffs.
+  if (g.week <= g.seasonWeeks) {
+      simWeekGames(g);
+      simCpuTrades(g); 
+      expireIntlFoundProspects(g);
+  }
 
   g.week += 1;
   g.hours.banked = clamp(g.hours.banked + g.hours.available, 0, g.hours.bankMax);
   g.hours.available = HOURS_PER_WEEK;
-  expireIntlFoundProspects(g);
 
-  if (g.week > g.seasonWeeks){
-    g.week = g.seasonWeeks;
-    g.inbox.unshift({ t: Date.now(), msg: "Regular season complete. Start Playoffs." });
+  if (g.week === g.seasonWeeks + 1){
+    g.inbox.unshift({ t: Date.now(), msg: "Regular season complete. All-Stars announced! Start Playoffs." });
   }
   
   autoSave();
@@ -956,6 +1010,8 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
   g.history ??= [];
   const userTeam = g.league.teams[g.userTeamIndex];
   const championTeam = g.league.teams.find(t => t.id === championTeamId);
+  
+  // FIX: calculate awards and push them to the player arrays
   const awards = computeAwards(g);
 
   let userFinish = "Didn't Make";
@@ -1026,6 +1082,12 @@ function computeAwards(g){
       rookies = all.filter(x => x.player.rookieYear === g.year);
   }
   const roy = topBy(rookies, x => x.ptsPg * 1.0 + x.astPg * 0.45 + (x.player.ovr || 70) * 0.2);
+
+  // FIX: Apply the awards directly to the players
+  if (mvp) { mvp.player.awards ??= []; mvp.player.awards.push(`${g.year} MVP`); }
+  if (opoy) { opoy.player.awards ??= []; opoy.player.awards.push(`${g.year} OPOY`); }
+  if (dpoy) { dpoy.player.awards ??= []; dpoy.player.awards.push(`${g.year} DPOY`); }
+  if (roy) { roy.player.awards ??= []; roy.player.awards.push(`${g.year} ROY`); }
 
   return {
     MVP: packAward(mvp),
