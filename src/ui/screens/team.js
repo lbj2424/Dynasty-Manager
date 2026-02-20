@@ -38,15 +38,22 @@ export function TeamScreen(){
             }
         });
 
-        // Re-sign Button (Only if <= 2 years left)
+        // FIX: Re-sign Button now prompts for confirmation
         let resignBtn = null;
         if (p.contract.years <= 2) {
             resignBtn = button("Extend", {
                 small: true,
                 onClick: () => {
-                    const res = negotiateExtension(team.id, p.id);
-                    alert(res.msg);
-                    if(res.success) rerender(root);
+                    const preview = negotiateExtension(team.id, p.id, false);
+                    if (!preview.success) {
+                        alert(preview.msg);
+                        return;
+                    }
+                    if (confirm(preview.msg)) {
+                        const res = negotiateExtension(team.id, p.id, true);
+                        alert(res.msg);
+                        if(res.success) rerender(root);
+                    }
                 }
             });
         }
@@ -61,8 +68,8 @@ export function TeamScreen(){
             el("td", {}, nameLink),
             el("td", {}, p.pos),
             el("td", { style:"font-weight:bold" }, String(p.ovr)),
-            el("td", { style:"color:var(--good)" }, String(p.off)), // NEW OFF
-            el("td", { style:"color:var(--warn)" }, String(p.def)), // NEW DEF
+            el("td", { style:"color:var(--good)" }, String(p.off ?? p.ovr)), 
+            el("td", { style:"color:var(--warn)" }, String(p.def ?? p.ovr)), 
             el("td", {}, p.potentialGrade),
             el("td", {}, String(p.age)),
             el("td", {}, String(p.happiness)),
@@ -79,8 +86,8 @@ export function TeamScreen(){
         el("th", {}, "Player"),
         el("th", {}, "Pos"),
         el("th", {}, "OVR"),
-        el("th", {}, "OFF"), // New Header
-        el("th", {}, "DEF"), // New Header
+        el("th", {}, "OFF"), 
+        el("th", {}, "DEF"), 
         el("th", {}, "Pot"),
         el("th", {}, "Age"),
         el("th", {}, "Happy"),
