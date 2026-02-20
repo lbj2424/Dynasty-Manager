@@ -26,7 +26,8 @@ function rollPot(r){
   return "F";
 }
 
-export function generateNCAAProspects({ year=1, count=60, seed="ncaa" } = {}){
+// FIX: Default to 2020
+export function generateNCAAProspects({ year=2020, count=60, seed="ncaa" } = {}){
   const r = rng(seedFromString(`${seed}_${year}`));
   const list = [];
   for(let i=0; i<count; i++){
@@ -49,7 +50,8 @@ export function generateNCAAProspects({ year=1, count=60, seed="ncaa" } = {}){
   return list.sort((a,b)=>b.currentOVR - a.currentOVR);
 }
 
-export function generateInternationalPool({ year=1, count=60, seed="intl" } = {}){
+// FIX: Default to 2020
+export function generateInternationalPool({ year=2020, count=60, seed="intl" } = {}){
   const r = rng(seedFromString(`${seed}_${year}`));
   const list = [];
   for(let i=0; i<count; i++){
@@ -67,7 +69,7 @@ export function generateInternationalPool({ year=1, count=60, seed="intl" } = {}
       continentKey: COUNTRY_TO_CONT[country] || "EU", 
       currentOVR: ovr,
       potentialGrade: rollPot(r),
-      declared: false, // Fix: Must be recruited
+      declared: false, 
       careerStats: [] 
     });
   }
