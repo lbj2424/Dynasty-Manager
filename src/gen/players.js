@@ -18,33 +18,27 @@ export function calculateSalary(ovr, age) {
   return Number((base * ageMult).toFixed(2));
 }
 
-export function generateTeamRoster({ teamName, teamRating, year=1, seed="roster" }){
+// FIX: Default to 2020
+export function generateTeamRoster({ teamName, teamRating, year=2020, seed="roster" }){
   const r = rng(seedFromString(`${seed}_${teamName}_${year}`));
   const roster = [];
   const quality = clamp((teamRating - 60) / 35, 0, 1);
 
   const genPlayer = (targetPos, minOvr, maxOvr) => {
-      // 1. Generate Base OVR
       const baseOvr = clamp(Math.floor(minOvr + r()*(maxOvr - minOvr + 1)), 60, 99);
       
-      // 2. Determine Archetype & Split Attributes
-      // Roll for type: 0=Balanced, 1=Offensive, 2=Defensive
       const typeRoll = r(); 
       let off = baseOvr;
       let def = baseOvr;
       
       if (typeRoll < 0.4) { 
-          // Offensive Specialist (+6 Off, -6 Def)
           off = Math.min(99, baseOvr + 6);
           def = Math.max(40, baseOvr - 6);
       } else if (typeRoll < 0.7) {
-          // Defensive Specialist (-6 Off, +6 Def)
           off = Math.max(40, baseOvr - 6);
           def = Math.min(99, baseOvr + 6);
       }
-      // Else Balanced (keep equal)
 
-      // Recalculate OVR from the split
       const finalOvr = Math.round((off + def) / 2);
 
       const rand = r();
@@ -62,8 +56,9 @@ export function generateTeamRoster({ teamName, teamRating, year=1, seed="roster"
       const salary = calculateSalary(finalOvr, age);
 
       let rookieYear = null;
-      if (year === 1 && age <= 21 && r() < 0.3) {
-          rookieYear = 1;
+      // FIX: Changed check to 2020
+      if (year === 2020 && age <= 21 && r() < 0.3) {
+          rookieYear = 2020;
       }
 
       return {
@@ -72,8 +67,8 @@ export function generateTeamRoster({ teamName, teamRating, year=1, seed="roster"
           pos: targetPos,
           age,
           ovr: finalOvr,
-          off, // New
-          def, // New
+          off, 
+          def, 
           potentialGrade: pot,
           happiness: 70,
           dev: { focus: "Balanced", points: 0 },
