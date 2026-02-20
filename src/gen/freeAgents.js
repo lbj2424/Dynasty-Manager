@@ -15,7 +15,7 @@ function rollGrade(r){
   return "F";
 }
 
-export function generateFreeAgents({ year=1, count=80, seed="fa" } = {}){
+export function generateFreeAgents({ year=2020, count=80, seed="fa" } = {}){ // FIX: Default to 2020
   const r = rng(seedFromString(`${seed}_${year}`));
   const list = [];
 
@@ -45,6 +45,18 @@ export function generateFreeAgents({ year=1, count=80, seed="fa" } = {}){
     const greed = 0.9 + r() * 0.2; 
     ask = Number((ask * greed).toFixed(2));
 
+    const careerStats = [];
+    
+    // FIX: Backfill missing history as "Free Agent" for newly generated players
+    for (let y = 2020; y < year; y++) {
+        careerStats.push({
+            year: y,
+            teamName: "Free Agent",
+            ovr: finalOvr, 
+            gp: 0, pts: 0, reb: 0, ast: 0
+        });
+    }
+
     list.push({
       id: id("fa", r),
       name: `${pick(FIRST, r)} ${pick(LAST, r)}`,
@@ -61,7 +73,7 @@ export function generateFreeAgents({ year=1, count=80, seed="fa" } = {}){
       signedByTeamId: null,
       promisedRole: null,
       contract: null,
-      careerStats: []
+      careerStats
     });
   }
 
