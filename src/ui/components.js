@@ -62,7 +62,7 @@ export function tabs(items, activeKey, onPick){
   );
 }
 
-// --- PLAYER MODAL (Needed for clicking names) ---
+// --- PLAYER MODAL (WITH AWARDS) ---
 export function showPlayerModal(player) {
     const overlay = el("div", { 
         style: "position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); z-index:999; display:flex; justify-content:center; align-items:center;" 
@@ -89,6 +89,31 @@ export function showPlayerModal(player) {
         historyRows.push(el("tr", {}, [el("td", { colspan:7, style:"text-align:center; opacity:0.5;" }, "No career history yet.")]));
     }
 
+    // --- PROCESS AWARDS LOGIC ---
+    const rawAwards = player.awards || [];
+    const processedAwards = [];
+    
+    // Group All-Stars
+    const allStarYears = rawAwards.filter(a => a.includes("All-Star")).map(a => a.split(" ")[0]);
+    if (allStarYears.length > 0) {
+        if (allStarYears.length >= 3) {
+            processedAwards.push(`${allStarYears.length}x All-Star`);
+        } else {
+            // Less than 3, just show them normally
+            allStarYears.forEach(y => processedAwards.push(`${y} All-Star`));
+        }
+    }
+    
+    // Add all other awards (MVP, DPOY, etc)
+    const otherAwards = rawAwards.filter(a => !a.includes("All-Star"));
+    processedAwards.push(...otherAwards);
+
+    // Render award badges
+    const awardElements = processedAwards.map(a => el("span", { 
+        class:"badge", 
+        style:"background:var(--accent); font-size:0.8em; margin-right:4px; margin-bottom:4px; display:inline-block;" 
+    }, a));
+
     const modal = el("div", { 
         class: "card", 
         style: "width:500px; max-width:90%; max-height:80vh; overflow-y:auto;" 
@@ -108,6 +133,9 @@ export function showPlayerModal(player) {
             el("br",{}),
             el("span", {}, `Potential: ${player.potentialGrade}`)
         ]),
+        // AWARDS SECTION
+        awardElements.length > 0 ? el("div", { style:"margin-top:10px;" }, awardElements) : null,
+        
         el("div", { class:"sep" }),
         el("div", { class:"h2" }, "Career History"),
         el("table", { class:"table" }, [
