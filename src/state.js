@@ -68,7 +68,7 @@ export function ensureAppState(loadedOrNull){
 }
 
 export function newGameState({ userTeamIndex=0 } = {}){
-  const year = 1;
+  const year = 2020; // FIX: Start game at year 2020
   const league = generateLeague({ seed: "v1_seed" });
 
   for (const t of league.teams){
@@ -101,7 +101,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
   return {
-    meta: { version: "0.7.1", createdAt: Date.now() },
+    meta: { version: "0.8.0", createdAt: Date.now() },
     activeSaveSlot: null,
     game: {
       year,
@@ -247,18 +247,17 @@ function processEndSeasonRoster(g){
     const nextRoster = [];
     
     for(const p of t.roster){
+      // FIX: Always record history even if GP is 0
       p.careerStats ??= [];
-      if (p.stats.gp > 0) {
-          p.careerStats.push({
-              year: g.year,
-              teamName: t.name,
-              ovr: p.ovr,
-              gp: p.stats.gp,
-              pts: p.stats.pts,
-              reb: p.stats.reb,
-              ast: p.stats.ast
-          });
-      }
+      p.careerStats.push({
+          year: g.year,
+          teamName: t.name,
+          ovr: p.ovr,
+          gp: p.stats.gp || 0,
+          pts: p.stats.pts || 0,
+          reb: p.stats.reb || 0,
+          ast: p.stats.ast || 0
+      });
 
       const age = p.age || 20;
       const minutes = p.rotation?.minutes || 0; 
@@ -361,7 +360,8 @@ function processEndSeasonRoster(g){
   }
 }
 
-export function negotiateExtension(teamId, playerId){
+// FIX: Added 'execute' parameter to allow for confirmation previews
+export function negotiateExtension(teamId, playerId, execute = true){
     const g = STATE.game;
     const team = g.league.teams.find(t => t.id === teamId);
     const p = team.roster.find(x => x.id === playerId);
@@ -383,6 +383,10 @@ export function negotiateExtension(teamId, playerId){
 
     if (projectedPayroll > softCapLimit) {
         return { success:false, msg:`Cannot sign. Payroll (${projectedPayroll.toFixed(1)}M) would exceed Soft Cap (${softCapLimit}M).` };
+    }
+
+    if (!execute) {
+        return { success:true, msg:`Would you like to extend ${p.name} for ${addYears} additional years at $${askAmount}M/yr?` };
     }
 
     p.contract.salary = askAmount;
@@ -489,7 +493,7 @@ export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
         userTeam.roster.push(p);
     }
     for (const pk of otherAssets.picks) {
-        otherTeam.assets.picks = otherTeam.assets.picks.filter(x => x.id !== pk.id);
+        otherTeam.assets.picks = otherAssets.picks.filter(x => x.id !== pk.id);
         userTeam.assets.picks.push(pk);
     }
 
@@ -767,7 +771,7 @@ export function simPlayoffRound(){
 
     while (s.aWins < 4 && s.bWins < 4){
         const gameNum = s.aWins + s.bWins + 1;
-        const statsA = calcTeamPerformance(teamA); // Typo Fixed
+        const statsA = calcTeamPerformance(teamA); 
         const statsB = calcTeamPerformance(teamB);
 
         let homeAdvA = 1.0;
@@ -917,7 +921,6 @@ export function advanceToNextYear(){
   g.scouting.intlLocation = null;
 
   for (const t of g.league.teams){
-    // Remove expired picks (Keep current year + future)
     if (t.assets && t.assets.picks) {
         t.assets.picks = t.assets.picks.filter(p => p.year >= g.year);
     }
