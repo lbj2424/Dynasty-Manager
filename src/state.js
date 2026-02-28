@@ -24,7 +24,9 @@ export function ensureAppState(loadedOrNull){
   if (loadedOrNull){
     STATE = loadedOrNull;
     STATE.game.history ??= [];
-    STATE.game.retiredPlayers ??= []; 
+    STATE.game.retiredPlayers ??= [];
+    STATE.game.inbox ??= [];
+    if (STATE.game.inbox.length > 50) STATE.game.inbox.length = 50; 
 
     if (STATE.game.scouting && STATE.game.scouting.intlPool) {
         const MAP = {
@@ -257,7 +259,11 @@ function generateInitialOffers(g){
             if (p.ovr > 80 && p.ovr > currentStarterOvr + 3) interestBoost = 2.0;
 
             const capSpace = t.cap.cap - t.cap.payroll;
-            const offerAmount = p.ask * (interestBoost > 1.2 ? 1.0 : (0.9 + Math.random() * 0.2));
+            let salaryMult;
+            if (interestBoost >= 2.0) salaryMult = 1.15 + Math.random() * 0.10; // desperate: 1.15–1.25x ask
+            else if (interestBoost >= 1.5) salaryMult = 1.05 + Math.random() * 0.10; // interested: 1.05–1.15x ask
+            else salaryMult = 0.90 + Math.random() * 0.20; // normal: 0.90–1.10x ask
+            const offerAmount = p.ask * salaryMult;
             
             if (capSpace > offerAmount && t.roster.length < 15) {
                 p.offers.push({
@@ -450,64 +456,153 @@ export function negotiateExtension(teamId, playerId, execute = true){
     return { success:true, msg:`Signed ${p.name} to ${addYears}y extension ($${askAmount}M/yr).` };
 }
 
+// ---- CPU TRADE HELPERS ----
+
+function getTeamMode(team, g) {
+    const confTeams = [...g.league.teams]
+        .filter(t => t.conference === team.conference)
+        .sort((a, b) => (b.wins - a.wins) || (a.losses - b.losses));
+    const rank = confTeams.findIndex(t => t.id === team.id) + 1;
+    return rank <= 8 ? "win_now" : "rebuilding";
+}
+
+function cpuPlayerValue(p) {
+    if (!p || p.ovr == null) return 0;
+    let val = Math.pow(Math.max(0, p.ovr - 50), 2.2);
+    const potMult = { "A+":1.6, "A":1.35, "B":1.15, "C":1.0, "D":0.85, "F":0.70 };
+    val *= (potMult[p.potentialGrade] || 1.0);
+    if (p.age <= 23) val *= 1.20;
+    else if (p.age >= 32) val *= 0.80;
+    else if (p.age >= 29) val *= 0.90;
+    return Math.round(val);
+}
+
+function cpuPickValue(pick, currentYear) {
+    const yearsOut = Math.max(0, pick.year - currentYear);
+    const base = pick.round === 1 ? 300 : 80;
+    return Math.round(base * Math.pow(0.85, yearsOut));
+}
+
+// Returns the player `team` should offer, based on what the other team's mode wants.
+// win_now teams want high-OVR veterans; rebuilding teams want young players.
+function pickOfferPlayer(team, requestingMode) {
+    const roster = [...team.roster].sort((a, b) => b.ovr - a.ovr);
+    if (requestingMode === "win_now") {
+        const vets = roster.filter(p => p.age >= 27 && p.ovr >= 74);
+        return vets[0] || roster[0] || null;
+    } else {
+        const young = roster.filter(p => p.age <= 24).sort((a, b) => b.ovr - a.ovr);
+        return young[0] || roster[roster.length - 1] || null;
+    }
+}
+
 function simCpuTrades(g){
-    if (Math.random() > 0.20) return;
+    if (Math.random() > 0.30) return;
     const aiTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
     if (aiTeams.length < 2) return;
 
-    const t1 = aiTeams[Math.floor(Math.random() * aiTeams.length)];
-    let t2 = aiTeams[Math.floor(Math.random() * aiTeams.length)];
-    while (t2.id === t1.id) t2 = aiTeams[Math.floor(Math.random() * aiTeams.length)];
+    // Pick two distinct random teams
+    const idx1 = Math.floor(Math.random() * aiTeams.length);
+    let idx2 = Math.floor(Math.random() * (aiTeams.length - 1));
+    if (idx2 >= idx1) idx2++;
+    const t1 = aiTeams[idx1];
+    const t2 = aiTeams[idx2];
 
     if (!t1.roster.length || !t2.roster.length) return;
-    const p1 = t1.roster[Math.floor(Math.random() * t1.roster.length)];
-    const p2 = t2.roster[Math.floor(Math.random() * t2.roster.length)];
 
-    const val1 = p1.ovr * (100 - p1.age); 
-    const val2 = p2.ovr * (100 - p2.age);
-    
-    const diff = Math.abs(val1 - val2);
-    const avg = (val1 + val2) / 2;
-    if (diff / avg > 0.15) return; 
+    const mode1 = getTeamMode(t1, g);
+    const mode2 = getTeamMode(t2, g);
+
+    // Each team offers what the other side wants based on their mode
+    const p1 = pickOfferPlayer(t1, mode2); // what t2 wants from t1
+    const p2 = pickOfferPlayer(t2, mode1); // what t1 wants from t2
+    if (!p1 || !p2 || p1.id === p2.id) return;
+
+    const v1 = cpuPlayerValue(p1);
+    const v2 = cpuPlayerValue(p2);
+    const gap = v1 - v2; // positive = t1 giving more value, needs a pick back
+    const avgVal = (v1 + v2) / 2;
+    if (avgVal === 0) return;
+
+    let t1Picks = [], t2Picks = [];
+    if (Math.abs(gap) / avgVal > 0.30) {
+        // Too unbalanced — try to add a pick from the team giving less value
+        const addingTeam = gap > 0 ? t2 : t1;
+        const targetVal = Math.abs(gap) * 0.75;
+        const balancingPick = (addingTeam.assets?.picks || [])
+            .filter(pk => pk.year >= g.year)
+            .map(pk => ({ pk, val: cpuPickValue(pk, g.year) }))
+            .filter(x => x.val >= targetVal * 0.5)
+            .sort((a, b) => Math.abs(a.val - targetVal) - Math.abs(b.val - targetVal))[0]?.pk;
+
+        if (!balancingPick) return; // Can't balance the trade
+        if (gap > 0) t2Picks = [balancingPick];
+        else t1Picks = [balancingPick];
+    }
 
     const t1NewPayroll = t1.cap.payroll - p1.contract.salary + p2.contract.salary;
     const t2NewPayroll = t2.cap.payroll - p2.contract.salary + p1.contract.salary;
-    const limit = SALARY_CAP + 10;
+    if (t1NewPayroll > SALARY_CAP + 10 || t2NewPayroll > SALARY_CAP + 10) return;
 
-    if (t1NewPayroll > limit || t2NewPayroll > limit) return; 
+    executeTrade(t1.id, t2.id, { players:[p1], picks:t1Picks }, { players:[p2], picks:t2Picks });
 
-    executeTrade(t1.id, t2.id, { players:[p1], picks:[] }, { players:[p2], picks:[] });
-    
-    g.inbox.unshift({ 
-        t: Date.now(), 
-        msg: `TRADE: ${t1.name} sent ${p1.name} to ${t2.name} for ${p2.name}.` 
+    const pickNote1 = t1Picks.length ? ` + ${t1Picks[0].year} R${t1Picks[0].round}` : "";
+    const pickNote2 = t2Picks.length ? ` + ${t2Picks[0].year} R${t2Picks[0].round}` : "";
+    g.inbox.unshift({
+        t: Date.now(),
+        msg: `TRADE: ${t1.name} sends ${p1.name}${pickNote1} to ${t2.name} for ${p2.name}${pickNote2}.`
     });
 }
 
-function autoDistributeMinutes(team){
+// OVR with a small bump for young high-potential players, used for rotation priority
+function devOvr(p) {
+    let o = p.ovr;
+    if (p.age <= 23 && (p.potentialGrade === "A+" || p.potentialGrade === "A")) o += 4;
+    else if (p.age <= 25 && p.potentialGrade === "A+") o += 2;
+    return o;
+}
+
+// Distribute `pool` minutes across `players` proportionally by devOvr, clamped to [min, max]
+function assignMinutes(players, pool, min, max) {
+    if (!players.length) return;
+    const weights = players.map(p => Math.max(1, devOvr(p) - 50));
+    const totalW = weights.reduce((s, w) => s + w, 0);
+    let used = 0;
+    players.forEach((p, i) => {
+        p.rotation.minutes = Math.max(min, Math.min(max, Math.round(weights[i] / totalW * pool)));
+        used += p.rotation.minutes;
+    });
+    // Correct any rounding drift on the best player
+    const drift = pool - used;
+    if (drift !== 0) players[0].rotation.minutes = Math.max(min, players[0].rotation.minutes + drift);
+}
+
+export function autoDistributeMinutes(team){
     const roster = team.roster || [];
     roster.forEach(p => { p.rotation = { minutes: 0, isStarter: false }; });
-    let remain = 220; 
-    const positions = ["PG","SG","SF","PF","C"];
-    
-    for (const pos of positions) {
-        const candidates = roster
-            .filter(p => p.pos === pos && !p.rotation.isStarter)
-            .sort((a,b) => b.ovr - a.ovr);
-        
-        if (candidates.length > 0) {
-            candidates[0].rotation.isStarter = true;
-            candidates[0].rotation.minutes = 34;
-            remain -= 34;
-        }
+    if (!roster.length) return;
+
+    const POSITIONS = ["PG","SG","SF","PF","C"];
+    const usedIds = new Set();
+    const starters = [];
+
+    // Best player at each position; fill any empty slot with the best remaining player
+    for (const pos of POSITIONS) {
+        const cand = roster.filter(p => p.pos === pos && !usedIds.has(p.id)).sort((a,b) => b.ovr - a.ovr)[0]
+                  || roster.filter(p => !usedIds.has(p.id)).sort((a,b) => b.ovr - a.ovr)[0];
+        if (cand) { starters.push(cand); usedIds.add(cand.id); }
     }
-    const bench = roster.filter(p => !p.rotation.isStarter).sort((a,b) => b.ovr - a.ovr);
-    for (let i = 0; i < Math.min(5, bench.length); i++) {
-        bench[i].rotation.minutes = 10;
-        remain -= 10;
-    }
-    const best = roster.sort((a,b)=>b.ovr-a.ovr)[0];
-    if(best && remain > 0) best.rotation.minutes += remain;
+    starters.forEach(p => p.rotation.isStarter = true);
+
+    // Top 7 remaining players get bench minutes, prioritising young/high-potential
+    const bench = roster
+        .filter(p => !usedIds.has(p.id))
+        .sort((a,b) => devOvr(b) - devOvr(a))
+        .slice(0, 7);
+
+    // 170 mins for starters (avg 34), 50 for bench (avg ~7) — total 220
+    assignMinutes(starters, 170, 28, 38);
+    assignMinutes(bench,    50,   4, 18);
 }
 
 function generateFuturePicks(teamId, startYear){
@@ -544,7 +639,7 @@ export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
         userTeam.roster.push(p);
     }
     for (const pk of otherAssets.picks) {
-        otherTeam.assets.picks = otherAssets.picks.filter(x => x.id !== pk.id);
+        otherTeam.assets.picks = otherTeam.assets.picks.filter(x => x.id !== pk.id);
         userTeam.assets.picks.push(pk);
     }
 
@@ -565,7 +660,30 @@ export function releasePlayer(teamId, playerId){
     if (!team) return;
     const idx = team.roster.findIndex(p => p.id === playerId);
     if (idx === -1) return;
-    team.roster.splice(idx, 1);
+
+    const [p] = team.roster.splice(idx, 1);
+
+    // Build a FA entry — cut players accept a slight discount to get signed quickly
+    const fairValue = calculateSalary(p.ovr, p.age);
+    const greed = 0.85 + Math.random() * 0.15;
+    const faEntry = {
+        ...p,
+        ask: Number((fairValue * greed).toFixed(2)),
+        yearsAsk: Math.max(1, Math.min(3, Math.floor(Math.random() * 3) + 1)),
+        signedByTeamId: null,
+        contract: null,
+        offers: []
+    };
+
+    // If FA is already open, drop them straight into the pool; otherwise queue for next offseason
+    if (g.offseason.freeAgents?.pool) {
+        g.offseason.freeAgents.pool.push(faEntry);
+        g.offseason.freeAgents.pool.sort((a, b) => b.ovr - a.ovr);
+    } else {
+        g.offseason.expiring ??= [];
+        g.offseason.expiring.push(faEntry);
+    }
+
     recalcPayroll(team);
     updateTeamRating(team);
     autoSave();
@@ -642,7 +760,8 @@ export function advanceWeek(){
   if (g.week === g.seasonWeeks + 1){
     g.inbox.unshift({ t: Date.now(), msg: "Regular season complete. All-Stars announced! Start Playoffs." });
   }
-  
+
+  if (g.inbox.length > 50) g.inbox.length = 50;
   autoSave();
 }
 
@@ -705,10 +824,11 @@ function simWeekGames(g){
 
     const varA = 0.9 + Math.random() * 0.2;
     const varB = 0.9 + Math.random() * 0.2;
-    const homeBoost = 1.05; 
+    const homeBoost = 1.05;
+    const aIsHome = Math.random() < 0.5;
 
-    let pointsA = statsA.offPoints * varA;
-    let pointsB = statsB.offPoints * varB * homeBoost;
+    let pointsA = statsA.offPoints * varA * (aIsHome ? homeBoost : 1.0);
+    let pointsB = statsB.offPoints * varB * (aIsHome ? 1.0 : homeBoost);
 
     const defenseFactorA = (statsA.defRating - 75) / 100;
     const defenseFactorB = (statsB.defRating - 75) / 100;
@@ -757,18 +877,20 @@ function calcTeamPerformance(team){
     const mins = p.rotation.minutes;
     if (mins <= 0) continue;
 
-    const usage = mins / 28.0; 
+    const usage = mins / 28.0;
     const gameVar = 0.8 + Math.random() * 0.4;
-    const ptsBase = Math.max(0, (p.off - 50)); 
-    const pts = clamp(ptsBase * 0.6 * usage * gameVar, 0, 60);
-    
+    // Happiness shifts performance: 70 is neutral, 0 = -15%, 100 = +10%
+    const happinessMult = clamp(1.0 + ((p.happiness ?? 70) - 70) * 0.002, 0.85, 1.10);
+    const ptsBase = Math.max(0, (p.off - 50));
+    const pts = clamp(ptsBase * 0.6 * usage * gameVar * happinessMult, 0, 60);
+
     p.stats.gp += 1;
     p.stats.pts += pts;
     p.stats.reb += (p.pos==="C"||p.pos==="PF" ? 0.35 : 0.12) * ptsBase * usage;
     p.stats.ast += (p.pos==="PG" ? 0.4 : 0.1) * ptsBase * usage;
 
     totalOffPoints += pts;
-    totalDefSum += (p.def * mins);
+    totalDefSum += (p.def * mins * happinessMult);
     totalMinutes += mins;
   }
 
@@ -990,6 +1112,8 @@ export function advanceToNextYear(){
     for (const p of (t.roster || [])){
       p.stats = { gp:0, pts:0, reb:0, ast:0 };
     }
+    autoDistributeMinutes(t);
+    updateTeamRating(t);
   }
 
   g.schedule = generateWeeklySchedule(g.league.teams.map(t => t.id), SEASON_WEEKS);

@@ -1,8 +1,23 @@
 import { rng, seedFromString, pick, id, clamp } from "../utils.js";
 import { calculateSalary } from "./players.js"; 
 
-const FIRST = ["Jalen","Marcus","Isaiah","Noah","Liam","Ethan","Mason","Aiden","Kai","Leo","Mateo","Jayden","Caleb","Owen","Carter","Julian","Jordan","Darius","Malik","Trey","Dillon","DeAndre","Aaron","Tyrese"];
-const LAST  = ["Cruz","Johnson","Smith","Brown","Williams","Jones","Garcia","Miller","Davis","Rodriguez","Martinez","Hernandez","Lopez","Gonzalez","Wilson","Anderson","Thomas","Taylor","Moore","Jackson","Martin","Lee","Perez"];
+const FIRST = [
+  "Jalen","Marcus","Isaiah","Noah","Liam","Ethan","Mason","Aiden","Kai","Leo",
+  "Mateo","Jayden","Caleb","Owen","Carter","Julian","Jordan","Darius","Malik","Trey",
+  "Dillon","DeAndre","Aaron","Tyrese","Chris","James","Kevin","Anthony","Brandon","Derrick",
+  "Kyle","Eric","Tyler","Andre","Javon","Tre","Zach","Elijah","Xavier","Damian",
+  "Miles","Scottie","Evan","Jaren","Bam","Devin","Cole","Keegan","Jaden","Josh",
+  "Jamal","Victor","Cam","Grant","Patrick","Amen","Reggie","Terrence","Dwayne","Chauncey"
+];
+const LAST = [
+  "Cruz","Johnson","Smith","Brown","Williams","Jones","Garcia","Miller","Davis","Rodriguez",
+  "Martinez","Hernandez","Lopez","Gonzalez","Wilson","Anderson","Thomas","Taylor","Moore","Jackson",
+  "Martin","Lee","Perez","White","Harris","Clark","Lewis","Walker","Hall","Allen",
+  "Young","King","Wright","Scott","Torres","Hill","Flores","Green","Adams","Nelson",
+  "Baker","Mitchell","Roberts","Phillips","Evans","Turner","Parker","Collins","Stewart","Sanchez",
+  "Morris","Rogers","Reed","Cook","Morgan","Bell","Cooper","Richardson","Howard","Ward",
+  "Brooks","Jenkins","Gray","Price","Simmons","Foster","Hayes","Bryant","Washington","Barnes"
+];
 const POS = ["PG","SG","SF","PF","C"];
 
 function rollGrade(r){

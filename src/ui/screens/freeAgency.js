@@ -1,5 +1,5 @@
 import { el, card, button, badge, showPlayerModal } from "../components.js";
-import { getState, startDraft, calculateSignChance, saveToSlot, getActiveSaveSlot } from "../../state.js"; // Added Save imports
+import { getState, startDraft, calculateSignChance, saveToSlot, getActiveSaveSlot, autoDistributeMinutes } from "../../state.js";
 import { PHASES } from "../../data/constants.js";
 
 export function FreeAgencyScreen(){
@@ -241,43 +241,51 @@ function signPlayer(p, teamId, salary, years){
 function simCpuFreeAgency(g){
     const fa = g.offseason.freeAgents;
     const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+    const POSITIONS = ["PG","SG","SF","PF","C"];
 
-    // 1. Resolve Pending Offers First
+    // 1. Resolve pending offers — best offer wins each player
     for (const p of fa.pool) {
         if (p.signedByTeamId) continue;
-        if (p.offers && p.offers.length > 0) {
-            p.offers.sort((a,b) => (b.salary * (1+0.1*b.years)) - (a.salary * (1+0.1*a.years)));
-            const best = p.offers[0];
-            const team = g.league.teams.find(t => t.id === best.teamId);
-            if (team) {
-                const space = team.cap.cap - team.cap.payroll;
-                if (space >= best.salary && team.roster.length < 15) {
-                    signPlayer(p, team.id, best.salary, best.years);
-                }
-            }
+        if (!p.offers || p.offers.length === 0) continue;
+
+        p.offers.sort((a,b) => (b.salary * (1 + 0.1 * b.years)) - (a.salary * (1 + 0.1 * a.years)));
+        const best = p.offers[0];
+        const team = g.league.teams.find(t => t.id === best.teamId);
+        if (team && (team.cap.cap - team.cap.payroll) >= best.salary && team.roster.length < 15) {
+            signPlayer(p, team.id, best.salary, best.years);
         }
     }
 
-    // 2. Fill remaining spots with needs-based logic
-    for (const t of cpuTeams){
+    // 2. Fill remaining roster holes — teams with the most need go first
+    const sortedCpuTeams = [...cpuTeams].sort((a, b) => a.roster.length - b.roster.length);
+
+    for (const t of sortedCpuTeams) {
         let space = t.cap.cap - t.cap.payroll;
-        while (t.roster.length < 12 && space > 0.5){
-            // Recalc needs
-            const counts = { PG:0, SG:0, SF:0, PF:0, C:0 };
+
+        while (t.roster.length < 12 && space > 0.5) {
+            const counts = {};
+            POSITIONS.forEach(pos => counts[pos] = 0);
             t.roster.forEach(p => counts[p.pos] = (counts[p.pos] || 0) + 1);
 
-            // Find best fit: Unsigned, affordable, and NOT overloading a position
-            const best = fa.pool.find(p => {
-                if (p.signedByTeamId) return false;
-                if (p.ask > space) return false;
-                if (counts[p.pos] >= 3) return false; // Don't sign if we have 3+
-                return true;
-            });
+            // Find the most-needed position (fewest players at that pos)
+            const neededPos = POSITIONS.reduce((a, b) => counts[a] <= counts[b] ? a : b);
 
-            if (!best) break; // Stop if no one fits criteria
-            signPlayer(best, t.id, best.ask, best.yearsAsk);
+            // Try to fill the most-needed position first, then fall back to any affordable fit
+            let pick = fa.pool.find(p =>
+                !p.signedByTeamId && p.ask <= space && p.pos === neededPos
+            );
+            if (!pick) {
+                pick = fa.pool.find(p =>
+                    !p.signedByTeamId && p.ask <= space && (counts[p.pos] || 0) < 3
+                );
+            }
+
+            if (!pick) break;
+            signPlayer(pick, t.id, pick.ask, pick.yearsAsk);
             space = t.cap.cap - t.cap.payroll;
         }
+
+        autoDistributeMinutes(t);
     }
 }
 

@@ -1,5 +1,5 @@
 import { el, card, button, badge } from "../components.js";
-import { getState, saveToSlot, getActiveSaveSlot } from "../../state.js";
+import { getState, saveToSlot, getActiveSaveSlot, autoDistributeMinutes } from "../../state.js";
 
 export function DepthChartScreen(){
   const s = getState();
@@ -40,7 +40,7 @@ export function DepthChartScreen(){
       el("div", { class:"row" }, [
         button("Auto-Distribute", {
             onClick: () => {
-                autoDistributeUI(team); 
+                autoDistributeMinutes(team);
                 rerender(root);
             }
         }),
@@ -99,7 +99,7 @@ export function DepthChartScreen(){
           el("td", {}, p.name),
           el("td", {}, p.pos),
           el("td", {}, String(p.ovr)),
-          el("td", {}, `${p.stats.pts.toFixed(1)} PPG`),
+          el("td", {}, `${p.stats.gp > 0 ? (p.stats.pts / p.stats.gp).toFixed(1) : "0.0"} PPG`),
           el("td", {}, startCheck),
           el("td", {}, minInput),
           el("td", {}, el("div", { 
@@ -126,30 +126,6 @@ export function DepthChartScreen(){
   return root;
 }
 
-function autoDistributeUI(team){
-    team.roster.forEach(p => { p.rotation = { minutes: 0, isStarter: false }; });
-    let remain = 220; // <--- CHANGED TO 220
-    const positions = ["PG","SG","SF","PF","C"];
-    
-    for (const pos of positions) {
-        const candidates = team.roster
-            .filter(p => p.pos === pos && !p.rotation.isStarter)
-            .sort((a,b) => b.ovr - a.ovr);
-        
-        if (candidates.length > 0) {
-            candidates[0].rotation.isStarter = true;
-            candidates[0].rotation.minutes = 34;
-            remain -= 34;
-        }
-    }
-    const bench = team.roster.filter(p => !p.rotation.isStarter).sort((a,b) => b.ovr - a.ovr);
-    for (let i = 0; i < Math.min(5, bench.length); i++) {
-        bench[i].rotation.minutes = 10;
-        remain -= 10;
-    }
-    const best = team.roster.sort((a,b)=>b.ovr-a.ovr)[0];
-    if(best && remain > 0) best.rotation.minutes += remain;
-}
 
 function rerender(root){
   const parent = root.parentElement;

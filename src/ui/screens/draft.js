@@ -248,14 +248,20 @@ function cpuPickWeighted(d, teamId, g){
 
   available.sort((a,b) => b.currentOVR - a.currentOVR);
 
-  const overallPick = (d.round - 1) * 32 + (d.pickIndex + 1); 
+  const overallPick = (d.round - 1) * 32 + (d.pickIndex + 1);
   const tierSize = clamp(8 + Math.floor(overallPick / 8), 8, 18);
   const tier = available.slice(0, tierSize);
 
+  // Count current roster positions for the drafting team
+  const draftingTeam = g.league.teams.find(t => t.id === teamId);
+  const posCounts = { PG:0, SG:0, SF:0, PF:0, C:0 };
+  if (draftingTeam) draftingTeam.roster.forEach(p => posCounts[p.pos] = (posCounts[p.pos] || 0) + 1);
+
   const weights = tier.map((p, i) => {
     const base = 1 / Math.pow(i + 1, 1.25);
-    const potBump = potentialBump(p.potentialGrade); 
-    return base * potBump;
+    const potBump = potentialBump(p.potentialGrade);
+    const needsBump = draftNeedsBump(p.pos, posCounts);
+    return base * potBump * needsBump;
   });
 
   const choice = weightedChoice(tier, weights);
@@ -266,6 +272,14 @@ function potentialBump(grade){
   return ({
     "A+": 1.12, "A": 1.08, "B": 1.04, "C": 1.00, "D": 0.98, "F": 0.96
   })[grade] ?? 1.0;
+}
+
+function draftNeedsBump(pos, counts){
+  const n = counts[pos] || 0;
+  if (n === 0) return 1.8; // position is empty — strong need
+  if (n === 1) return 1.3; // only one, could use depth
+  if (n >= 3) return 0.7; // already stacked here
+  return 1.0;
 }
 
 function weightedChoice(items, weights){

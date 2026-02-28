@@ -75,7 +75,7 @@ export function TeamScreen(){
             el("td", {}, String(p.happiness)),
             el("td", {}, `${p.contract.years}y / ${p.contract.salary}M`),
             el("td", {}, `${(p.rotation?.minutes || 0)} min`),
-            el("td", {}, `${p.stats.pts.toFixed(1)}`),
+            el("td", {}, `${p.stats.gp > 0 ? (p.stats.pts / p.stats.gp).toFixed(1) : "0.0"}`),
             el("td", { style:"display:flex; gap:4px;" }, [resignBtn, cutBtn])
         ]);
     });
