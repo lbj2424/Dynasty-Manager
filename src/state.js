@@ -39,6 +39,13 @@ export function ensureAppState(loadedOrNull){
         }
     }
 
+    // Migrate existing playoff series to include games array
+    for (const round of (STATE.game.playoffs?.rounds || [])) {
+      for (const s of [...(round.east||[]), ...(round.west||[]), ...(round.finals||[])]) {
+        s.games ??= [];
+      }
+    }
+
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0; t.losses ??= 0;
       t.assets ??= { picks: generateFuturePicks(t.id, STATE.game.year) };
@@ -928,75 +935,94 @@ export function startPlayoffs(){
   autoSave();
 }
 
+function _simOneGame(s, teamA, teamB){
+  s.games ??= [];
+  const gameNum = s.aWins + s.bWins + 1;
+  const statsA = calcTeamPerformance(teamA);
+  const statsB = calcTeamPerformance(teamB);
+
+  const homeAdvA = [1,2,5,7].includes(gameNum) ? 1.05 : 1.0;
+  const homeAdvB = [1,2,5,7].includes(gameNum) ? 1.0 : 1.05;
+  const varA = 0.9 + Math.random() * 0.2;
+  const varB = 0.9 + Math.random() * 0.2;
+
+  const defFactA = (statsA.defRating - 75) / 100;
+  const defFactB = (statsB.defRating - 75) / 100;
+
+  let scoreA = Math.round(statsA.offPoints * varA * homeAdvA * (1 - defFactB));
+  let scoreB = Math.round(statsB.offPoints * varB * homeAdvB * (1 - defFactA));
+  while (scoreA === scoreB){
+    scoreA += Math.floor(Math.random() * 4) + 1;
+    scoreB += Math.floor(Math.random() * 4) + 1;
+  }
+
+  if (scoreA > scoreB) s.aWins++; else s.bWins++;
+  s.games.push({ gameNum, scoreA, scoreB });
+
+  if (s.aWins === 4 || s.bWins === 4){
+    s.done = true;
+    s.winner = s.aWins === 4 ? s.a : s.b;
+  }
+}
+
+function _advancePlayoffRound(g, p, allSeries){
+  if (p.round === 4){
+    p.championTeamId = allSeries[0].winner;
+    finalizeSeasonAndLogHistory({ championTeamId: p.championTeamId, userPlayoffFinish: "Playoffs" });
+    startFreeAgency();
+  } else {
+    p.round++;
+    generateNextRoundMatchups(g);
+  }
+}
+
+export function simPlayoffGame(){
+  const g = STATE.game;
+  if (g.phase !== PHASES.PLAYOFFS) return;
+  const p = g.playoffs;
+  const rObj = p.rounds[p.round - 1];
+  if (!rObj) return;
+
+  const allSeries = [...(rObj.east||[]), ...(rObj.west||[]), ...(rObj.finals||[])];
+  if (allSeries.every(s => s.done)) return;
+
+  for (const s of allSeries){
+    if (s.done) continue;
+    const teamA = g.league.teams.find(t => t.id === s.a);
+    const teamB = g.league.teams.find(t => t.id === s.b);
+    if (teamA && teamB) _simOneGame(s, teamA, teamB);
+  }
+
+  if (allSeries.every(s => s.done)) _advancePlayoffRound(g, p, allSeries);
+  autoSave();
+}
+
 export function simPlayoffRound(){
   const g = STATE.game;
   if (g.phase !== PHASES.PLAYOFFS) return;
   const p = g.playoffs;
-  const currentRoundIndex = p.round - 1;
-  if (!p.rounds[currentRoundIndex]) return;
+  const rObj = p.rounds[p.round - 1];
+  if (!rObj) return;
 
-  const rObj = p.rounds[currentRoundIndex];
-  const allSeries = [...(rObj.east || []), ...(rObj.west || []), ...(rObj.finals || [])];
-  let roundOver = true;
+  const allSeries = [...(rObj.east||[]), ...(rObj.west||[]), ...(rObj.finals||[])];
 
   for (const s of allSeries){
     if (s.done) continue;
-
     const teamA = g.league.teams.find(t => t.id === s.a);
     const teamB = g.league.teams.find(t => t.id === s.b);
-
-    while (s.aWins < 4 && s.bWins < 4){
-        const gameNum = s.aWins + s.bWins + 1;
-        const statsA = calcTeamPerformance(teamA); 
-        const statsB = calcTeamPerformance(teamB);
-
-        let homeAdvA = 1.0;
-        let homeAdvB = 1.0;
-        if ([1, 2, 5, 7].includes(gameNum)) homeAdvA = 1.05; 
-        else homeAdvB = 1.05; 
-
-        const varA = 0.9 + Math.random() * 0.2;
-        const varB = 0.9 + Math.random() * 0.2;
-
-        let pointsA = statsA.offPoints * varA * homeAdvA;
-        let pointsB = statsB.offPoints * varB * homeAdvB;
-
-        const defenseFactorA = (statsA.defRating - 75) / 100;
-        const defenseFactorB = (statsB.defRating - 75) / 100;
-
-        let finalScoreA = Math.round(pointsA * (1 - defenseFactorB));
-        let finalScoreB = Math.round(pointsB * (1 - defenseFactorA));
-        
-        while (finalScoreA === finalScoreB) {
-            finalScoreA += Math.floor(Math.random() * 4) + 1;
-            finalScoreB += Math.floor(Math.random() * 4) + 1;
-        }
-
-        if (finalScoreA > finalScoreB) s.aWins++;
-        else s.bWins++;
-    }
-
+    while (s.aWins < 4 && s.bWins < 4) _simOneGame(s, teamA, teamB);
     s.done = true;
-    s.winner = (s.aWins === 4) ? s.a : s.b;
+    s.winner = s.aWins === 4 ? s.a : s.b;
   }
 
-  if (roundOver) {
-      if (p.round === 4) {
-          p.championTeamId = allSeries[0].winner;
-          finalizeSeasonAndLogHistory({ championTeamId: p.championTeamId, userPlayoffFinish: "Playoffs" });
-          startFreeAgency();
-      } else {
-          p.round++;
-          generateNextRoundMatchups(g);
-      }
-  }
+  _advancePlayoffRound(g, p, allSeries);
   autoSave();
 }
 
 function generateNextRoundMatchups(g){
     const p = g.playoffs;
     const rNum = p.round;
-    const makeSeries = (idA, idB) => ({ a: idA, b: idB, aWins:0, bWins:0, done:false, winner:null });
+    const makeSeries = (idA, idB) => ({ a: idA, b: idB, aWins:0, bWins:0, done:false, winner:null, games:[] });
 
     if (rNum === 1) {
         const pair = (seeds) => [

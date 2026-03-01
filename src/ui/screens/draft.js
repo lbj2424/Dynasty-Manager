@@ -31,7 +31,7 @@ export function DraftScreen(){
   g.scouting.scoutedIntlIds ??= [];
 
   const pickNumberOverall = (d.round - 1) * 32 + (d.pickIndex + 1);
-  const onClockTeamId = d.orderTeamIds[d.pickIndex];
+  const onClockTeamId = d.orderTeamIds[(d.round - 1) * 32 + d.pickIndex];
   const onClockTeam = teamById(onClockTeamId);
   const userTeam = g.league.teams[g.userTeamIndex];
   const userOnClock = onClockTeamId === userTeam.id;
