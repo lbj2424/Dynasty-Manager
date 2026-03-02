@@ -111,7 +111,7 @@ export function showPlayerModal(player) {
     // Render award badges
     const awardElements = processedAwards.map(a => el("span", { 
         class:"badge", 
-        style:"background:var(--accent); font-size:0.8em; margin-right:4px; margin-bottom:4px; display:inline-block;" 
+        style:"background:var(--accent); color:black; font-size:0.8em; margin-right:4px; margin-bottom:4px; display:inline-block;" 
     }, a));
 
     const modal = el("div", { 
