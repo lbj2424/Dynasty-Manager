@@ -1,4 +1,5 @@
 export const SEASON_WEEKS = 20;
+export const TRADE_DEADLINE_WEEK = 18;
 
 export const HOURS_PER_WEEK = 25;
 export const HOURS_BANK_MAX = 60;

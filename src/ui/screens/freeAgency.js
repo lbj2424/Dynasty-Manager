@@ -1,6 +1,6 @@
 import { el, card, button, badge, showPlayerModal } from "../components.js";
-import { getState, startDraft, calculateSignChance, saveToSlot, getActiveSaveSlot, autoDistributeMinutes } from "../../state.js";
-import { PHASES } from "../../data/constants.js";
+import { getState, startDraft, calculateSignChance, saveToSlot, getActiveSaveSlot, autoDistributeMinutes, advanceFaRound } from "../../state.js";
+import { PHASES, SALARY_CAP } from "../../data/constants.js";
 
 export function FreeAgencyScreen(){
   const s = getState();
@@ -84,7 +84,10 @@ export function FreeAgencyScreen(){
     ]);
   });
 
-  root.appendChild(card("Free Agency", `Cap Space: $${capSpace.toFixed(2)}M`, [
+  const faRound = g.offseason.freeAgents.round ?? 1;
+  const roundLabel = `FA Week ${faRound} of 3`;
+
+  root.appendChild(card("Free Agency", `Cap Space: $${capSpace.toFixed(2)}M  ·  ${roundLabel}`, [
     filterBar,
     el("div", { class:"sep" }),
     el("table", { class:"table" }, [
@@ -104,14 +107,24 @@ export function FreeAgencyScreen(){
       ])
     ]),
     el("div", { class:"sep" }),
-    button("Finish Free Agency -> Draft", {
-      primary: true,
-      onClick: () => {
-        simCpuFreeAgency(g);
-        startDraft();
-        location.hash = "#/draft";
-      }
-    })
+    el("div", { class:"row", style:"gap:10px;" }, [
+      faRound < 3
+        ? button(`Advance to FA Week ${faRound + 1}`, {
+            onClick: () => {
+              advanceFaRound();
+              rerender(root);
+            }
+          })
+        : el("span", { style:"opacity:0.5; font-size:0.9em;" }, "FA market has settled (Week 3 of 3)"),
+      button("Finish Free Agency -> Draft", {
+        primary: true,
+        onClick: () => {
+          simCpuFreeAgency(g);
+          startDraft();
+          location.hash = "#/draft";
+        }
+      })
+    ])
   ]));
 
   return root;
@@ -251,7 +264,8 @@ function simCpuFreeAgency(g){
         p.offers.sort((a,b) => (b.salary * (1 + 0.1 * b.years)) - (a.salary * (1 + 0.1 * a.years)));
         const best = p.offers[0];
         const team = g.league.teams.find(t => t.id === best.teamId);
-        if (team && (team.cap.cap - team.cap.payroll) >= best.salary && team.roster.length < 15) {
+        const capLimit = best.isBirdRights ? SALARY_CAP + 20 : team?.cap.cap;
+        if (team && (capLimit - team.cap.payroll) >= best.salary && team.roster.length < 15) {
             signPlayer(p, team.id, best.salary, best.years);
         }
     }

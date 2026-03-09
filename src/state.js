@@ -6,6 +6,7 @@ import {
   HOURS_BANK_MAX,
   HOURS_PER_WEEK,
   SEASON_WEEKS,
+  TRADE_DEADLINE_WEEK,
   PHASES,
   SALARY_CAP
 } from "./data/constants.js";
@@ -209,12 +210,23 @@ export function startFreeAgency(){
 
   g.offseason.freeAgents = {
     cap: SALARY_CAP,
-    pool: combinedPool
+    pool: combinedPool,
+    round: 1
   };
 
   generateInitialOffers(g);
+  runFaCounterOffers(g);
 
   g.inbox.unshift({ t: Date.now(), msg: `Free Agency started. ${expiringPool.length} players joined from expired contracts.` });
+  autoSave();
+}
+
+export function advanceFaRound(){
+  const g = STATE.game;
+  const fa = g.offseason.freeAgents;
+  if (!fa || fa.round >= 3) return;
+  fa.round += 1;
+  runFaCounterOffers(g);
   autoSave();
 }
 
@@ -234,7 +246,49 @@ function generateInitialOffers(g){
     }
 
     for (const p of fa.pool) {
-        p.offers = []; 
+        p.offers = [];
+
+        // Bird Rights: former CPU team can re-sign up to soft cap (140M)
+        if (p.formerTeamId) {
+            const formerTeam = cpuTeams.find(t => t.id === p.formerTeamId);
+            if (formerTeam && formerTeam.roster.length < 15) {
+                const birdSpace = (SALARY_CAP + 20) - formerTeam.cap.payroll;
+                let wantsToKeep = p.ovr >= 74 || (p.age <= 25 && ["A+", "A"].includes(p.potentialGrade));
+
+                if (wantsToKeep) {
+                    // Is there a meaningfully better player at the same position still under contract?
+                    const betterAtPos = formerTeam.roster
+                        .filter(r => r.pos === p.pos && r.ovr >= p.ovr + 6 && r.contract?.years >= 1)
+                        .sort((a, b) => b.ovr - a.ovr)[0];
+
+                    if (betterAtPos) {
+                        if (betterAtPos.contract.years >= 3) {
+                            // Already locked in long-term at this position — no need for the lesser player
+                            wantsToKeep = false;
+                        } else {
+                            // Expiring within 1-2 years — check if we can afford both re-signs
+                            const futureAsk = calculateSalary(betterAtPos.ovr, betterAtPos.age + betterAtPos.contract.years);
+                            const spaceAfterResign = birdSpace - p.ask;
+                            if (spaceAfterResign < futureAsk * 0.80) {
+                                // Can't afford the better player if we commit to this one
+                                wantsToKeep = false;
+                            }
+                        }
+                    }
+                }
+
+                if (wantsToKeep && birdSpace >= p.ask) {
+                    const offerSal = Number((p.ask * (1.05 + Math.random() * 0.05)).toFixed(2));
+                    p.offers.push({
+                        teamId: formerTeam.id,
+                        teamName: formerTeam.name,
+                        salary: Math.min(offerSal, Number(birdSpace.toFixed(2))),
+                        years: p.yearsAsk,
+                        isBirdRights: true
+                    });
+                }
+            }
+        }
 
         let demandChance = 0;
         if (p.ovr >= 85) demandChance = 0.95;
@@ -281,6 +335,39 @@ function generateInitialOffers(g){
                 });
             }
         }
+    }
+}
+
+// Simulate a second bidding round: teams that are outbid by a small margin may counter-offer
+function runFaCounterOffers(g) {
+    const fa = g.offseason.freeAgents;
+    const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+
+    for (const p of fa.pool) {
+        if (!p.offers || p.offers.length < 2) continue;
+
+        p.offers.sort((a, b) => (b.salary * (1 + 0.1 * b.years)) - (a.salary * (1 + 0.1 * a.years)));
+        const bestScore = p.offers[0].salary * (1 + 0.1 * p.offers[0].years);
+
+        for (let i = 1; i < p.offers.length; i++) {
+            const offer = p.offers[i];
+            const score = offer.salary * (1 + 0.1 * offer.years);
+            const gap = (bestScore - score) / bestScore;
+
+            // If within 20% of the best offer, 50% chance to bump up and compete
+            if (gap <= 0.20 && Math.random() < 0.50) {
+                const team = cpuTeams.find(t => t.id === offer.teamId);
+                if (!team) continue;
+                const newSalary = Number((p.offers[0].salary * (1.02 + Math.random() * 0.06)).toFixed(2));
+                const capLimit = offer.isBirdRights ? SALARY_CAP + 20 : team.cap.cap;
+                if ((capLimit - team.cap.payroll) >= newSalary) {
+                    offer.salary = newSalary;
+                }
+            }
+        }
+
+        // Re-sort after counter-offers
+        p.offers.sort((a, b) => (b.salary * (1 + 0.1 * b.years)) - (a.salary * (1 + 0.1 * a.years)));
     }
 }
 
@@ -410,6 +497,7 @@ function processEndSeasonRoster(g){
             ...p,
             ask: Number((fairValue * greed).toFixed(2)),
             yearsAsk: Math.max(1, Math.min(4, Math.floor(Math.random() * 4) + 1)),
+            formerTeamId: t.id,
             signedByTeamId: null,
             contract: null,
             careerStats: p.careerStats,
@@ -470,7 +558,9 @@ function getTeamMode(team, g) {
         .filter(t => t.conference === team.conference)
         .sort((a, b) => (b.wins - a.wins) || (a.losses - b.losses));
     const rank = confTeams.findIndex(t => t.id === team.id) + 1;
-    return rank <= 8 ? "win_now" : "rebuilding";
+    if (rank <= 8) return "win_now";
+    if (rank <= 14) return "retooling";
+    return "rebuilding";
 }
 
 function cpuPlayerValue(p) {
@@ -491,15 +581,98 @@ function cpuPickValue(pick, currentYear) {
 }
 
 // Returns the player `team` should offer, based on what the other team's mode wants.
-// win_now teams want high-OVR veterans; rebuilding teams want young players.
+// Prefers trading from overstocked positions; avoids leaving a position empty.
 function pickOfferPlayer(team, requestingMode) {
-    const roster = [...team.roster].sort((a, b) => b.ovr - a.ovr);
+    const roster = [...team.roster];
+    const POSITIONS = ["PG","SG","SF","PF","C"];
+
+    // Find positions the team has surplus at (most players) — prefer trading those
+    const posCounts = {};
+    POSITIONS.forEach(pos => posCounts[pos] = 0);
+    roster.forEach(p => posCounts[p.pos] = (posCounts[p.pos] || 0) + 1);
+    const maxCount = Math.max(...POSITIONS.map(pos => posCounts[pos]));
+    const surplusPos = new Set(POSITIONS.filter(pos => posCounts[pos] >= maxCount));
+
+    // A player is safe to trade only if someone else covers their position
+    const isTradeSafe = (p) => roster.filter(x => x.pos === p.pos && x.id !== p.id).length >= 1;
+
+    let pool;
     if (requestingMode === "win_now") {
-        const vets = roster.filter(p => p.age >= 27 && p.ovr >= 74);
-        return vets[0] || roster[0] || null;
+        pool = roster.filter(p => p.age >= 27 && p.ovr >= 74 && isTradeSafe(p));
+    } else if (requestingMode === "retooling") {
+        pool = roster.filter(p => p.age <= 27 && p.ovr >= 70 && isTradeSafe(p));
     } else {
-        const young = roster.filter(p => p.age <= 24).sort((a, b) => b.ovr - a.ovr);
-        return young[0] || roster[roster.length - 1] || null;
+        // rebuilding wants young players
+        pool = roster.filter(p => p.age <= 24 && isTradeSafe(p));
+    }
+
+    // Sort: surplus positions first, then by lowest OVR (keep stars)
+    pool.sort((a, b) => {
+        const aSurplus = surplusPos.has(a.pos) ? 0 : 1;
+        const bSurplus = surplusPos.has(b.pos) ? 0 : 1;
+        return aSurplus - bSurplus || a.ovr - b.ovr;
+    });
+
+    if (pool.length) return pool[0];
+
+    // Fallback: any safe player, weakest first
+    const safe = roster.filter(isTradeSafe).sort((a, b) => a.ovr - b.ovr);
+    return safe[0] || null;
+}
+
+// CPU teams lock up young stars / valuable players mid-season before they hit free agency
+function simCpuExtensions(g) {
+    const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+
+    for (const team of cpuTeams) {
+        const mode = getTeamMode(team, g);
+        if (mode === "rebuilding") continue; // rebuilders let players walk or get picks
+
+        for (const p of team.roster) {
+            if (!p.contract || p.contract.years > 2) continue; // not extension-eligible
+            if ((p.happiness ?? 70) < 40) continue; // too unhappy to talk
+
+            const isWorthExtending =
+                p.ovr >= 82 ||
+                (p.ovr >= 76 && p.age <= 26) ||
+                (p.ovr >= 78 && ["A+", "A"].includes(p.potentialGrade));
+            if (!isWorthExtending) continue;
+            if (Math.random() > 0.70) continue; // not every eligible player gets extended
+
+            const fairValue = calculateSalary(p.ovr, p.age);
+            const discount = (p.happiness ?? 70) >= 90 ? 0.90 : (p.happiness ?? 70) >= 70 ? 0.95 : 1.0;
+            const askAmount = Number((fairValue * discount).toFixed(2));
+            const addYears = 3;
+
+            const projectedPayroll = team.cap.payroll + (askAmount - (p.contract.salary || 0));
+            if (projectedPayroll > SALARY_CAP + 20) continue; // can't afford even with soft cap
+
+            // Smart cap logic: don't extend if a better player at the same position is expiring soon
+            const betterLocked = team.roster.find(r =>
+                r.id !== p.id && r.pos === p.pos && r.ovr >= p.ovr + 6 && (r.contract?.years ?? 0) >= 3
+            );
+            if (betterLocked) continue; // already have a long-term solution at this position
+
+            const betterExpiringSoon = team.roster.find(r =>
+                r.id !== p.id && r.pos === p.pos && r.ovr >= p.ovr + 6 &&
+                (r.contract?.years ?? 0) >= 1 && (r.contract?.years ?? 0) <= 2
+            );
+            if (betterExpiringSoon) {
+                const futureAsk = calculateSalary(betterExpiringSoon.ovr, betterExpiringSoon.age + betterExpiringSoon.contract.years);
+                const spaceAfterExtend = (SALARY_CAP + 20) - projectedPayroll;
+                if (spaceAfterExtend < futureAsk * 0.80) continue; // can't afford the better player if we commit here
+            }
+
+            p.contract.salary = askAmount;
+            p.contract.years += addYears;
+            p.happiness = Math.min(100, (p.happiness ?? 70) + 5);
+            recalcPayroll(team);
+
+            g.inbox.unshift({
+                t: Date.now(),
+                msg: `EXTENSION: ${team.name} signed ${p.name} to a ${addYears}-year extension at $${askAmount}M/yr.`
+            });
+        }
     }
 }
 
@@ -508,57 +681,201 @@ function simCpuTrades(g){
     const aiTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
     if (aiTeams.length < 2) return;
 
-    // Pick two distinct random teams
     const idx1 = Math.floor(Math.random() * aiTeams.length);
     let idx2 = Math.floor(Math.random() * (aiTeams.length - 1));
     if (idx2 >= idx1) idx2++;
     const t1 = aiTeams[idx1];
     const t2 = aiTeams[idx2];
-
-    if (!t1.roster.length || !t2.roster.length) return;
-
     const mode1 = getTeamMode(t1, g);
     const mode2 = getTeamMode(t2, g);
 
-    // Each team offers what the other side wants based on their mode
-    const p1 = pickOfferPlayer(t1, mode2); // what t2 wants from t1
-    const p2 = pickOfferPlayer(t2, mode1); // what t1 wants from t2
-    if (!p1 || !p2 || p1.id === p2.id) return;
-
-    const v1 = cpuPlayerValue(p1);
-    const v2 = cpuPlayerValue(p2);
-    const gap = v1 - v2; // positive = t1 giving more value, needs a pick back
-    const avgVal = (v1 + v2) / 2;
-    if (avgVal === 0) return;
-
-    let t1Picks = [], t2Picks = [];
-    if (Math.abs(gap) / avgVal > 0.30) {
-        // Too unbalanced — try to add a pick from the team giving less value
-        const addingTeam = gap > 0 ? t2 : t1;
-        const targetVal = Math.abs(gap) * 0.75;
-        const balancingPick = (addingTeam.assets?.picks || [])
-            .filter(pk => pk.year >= g.year)
-            .map(pk => ({ pk, val: cpuPickValue(pk, g.year) }))
-            .filter(x => x.val >= targetVal * 0.5)
-            .sort((a, b) => Math.abs(a.val - targetVal) - Math.abs(b.val - targetVal))[0]?.pk;
-
-        if (!balancingPick) return; // Can't balance the trade
-        if (gap > 0) t2Picks = [balancingPick];
-        else t1Picks = [balancingPick];
+    const dealFns = [
+        () => cpuDeal_PlayerSwap(t1, t2, mode1, mode2, g),
+        () => cpuDeal_TwoForOne(t1, t2, mode1, mode2, g),
+        () => cpuDeal_PlayerForPicks(t1, t2, mode1, mode2, g),
+        () => cpuDeal_PickSwap(t1, t2, g),
+    ];
+    for (let i = dealFns.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [dealFns[i], dealFns[j]] = [dealFns[j], dealFns[i]];
     }
 
-    const t1NewPayroll = t1.cap.payroll - p1.contract.salary + p2.contract.salary;
-    const t2NewPayroll = t2.cap.payroll - p2.contract.salary + p1.contract.salary;
-    if (t1NewPayroll > SALARY_CAP + 10 || t2NewPayroll > SALARY_CAP + 10) return;
+    for (const fn of dealFns) {
+        const deal = fn();
+        if (!deal) continue;
 
-    executeTrade(t1.id, t2.id, { players:[p1], picks:t1Picks }, { players:[p2], picks:t2Picks });
+        const t1OutSal = deal.t1Assets.players.reduce((s, p) => s + (p.contract?.salary || 0), 0);
+        const t2OutSal = deal.t2Assets.players.reduce((s, p) => s + (p.contract?.salary || 0), 0);
+        if ((t1.cap.payroll - t1OutSal + t2OutSal) > SALARY_CAP) continue;
+        if ((t2.cap.payroll - t2OutSal + t1OutSal) > SALARY_CAP) continue;
 
-    const pickNote1 = t1Picks.length ? ` + ${t1Picks[0].year} R${t1Picks[0].round}` : "";
-    const pickNote2 = t2Picks.length ? ` + ${t2Picks[0].year} R${t2Picks[0].round}` : "";
-    g.inbox.unshift({
-        t: Date.now(),
-        msg: `TRADE: ${t1.name} sends ${p1.name}${pickNote1} to ${t2.name} for ${p2.name}${pickNote2}.`
-    });
+        const t1Net = deal.t2Assets.players.length - deal.t1Assets.players.length;
+        const t2Net = deal.t1Assets.players.length - deal.t2Assets.players.length;
+        if (t1.roster.length + t1Net > 15 || t2.roster.length + t2Net > 15) continue;
+        if (t1.roster.length + t1Net < 5 || t2.roster.length + t2Net < 5) continue;
+
+        // Both teams must retain at least 1 player at each position after the trade
+        const sendIds1 = new Set(deal.t1Assets.players.map(p => p.id));
+        const sendIds2 = new Set(deal.t2Assets.players.map(p => p.id));
+        const t1PostRoster = [
+            ...t1.roster.filter(p => !sendIds1.has(p.id)),
+            ...deal.t2Assets.players
+        ];
+        const t2PostRoster = [
+            ...t2.roster.filter(p => !sendIds2.has(p.id)),
+            ...deal.t1Assets.players
+        ];
+        const hasAllPos = (roster) => ["PG","SG","SF","PF","C"].every(pos => roster.some(p => p.pos === pos));
+        if (!hasAllPos(t1PostRoster) || !hasAllPos(t2PostRoster)) continue;
+
+        executeTrade(t1.id, t2.id, deal.t1Assets, deal.t2Assets);
+
+        const fmtSide = (assets) => [
+            ...assets.players.map(p => p.name),
+            ...assets.picks.map(pk => `${pk.year} R${pk.round}`)
+        ].join(' + ') || '(nothing)';
+        g.inbox.unshift({
+            t: Date.now(),
+            msg: `TRADE: ${t1.name} sends ${fmtSide(deal.t1Assets)} to ${t2.name} for ${fmtSide(deal.t2Assets)}.`
+        });
+        return;
+    }
+}
+
+// Collect picks from `team` totaling roughly `targetVal`, up to `maxPicks`. Returns null if can't reach 40% of target.
+function _gatherPicks(team, targetVal, maxPicks, g) {
+    const avail = (team.assets?.picks || [])
+        .filter(pk => pk.year >= g.year)
+        .map(pk => ({ pk, val: cpuPickValue(pk, g.year) }))
+        .sort((a, b) => b.val - a.val);
+    let covered = 0;
+    const result = [];
+    for (const { pk, val } of avail) {
+        if (covered >= targetVal * 0.75 || result.length >= maxPicks) break;
+        result.push(pk);
+        covered += val;
+    }
+    return covered >= targetVal * 0.40 ? result : null;
+}
+
+// 1-for-1 player swap, with up to 2 picks added on one side to balance
+function cpuDeal_PlayerSwap(t1, t2, mode1, mode2, g) {
+    if (!t1.roster.length || !t2.roster.length) return null;
+    const p1 = pickOfferPlayer(t1, mode2);
+    const p2 = pickOfferPlayer(t2, mode1);
+    if (!p1 || !p2 || p1.id === p2.id) return null;
+
+    const v1 = cpuPlayerValue(p1), v2 = cpuPlayerValue(p2);
+    const gap = v1 - v2, avgVal = (v1 + v2) / 2;
+    if (avgVal === 0) return null;
+
+    let t1Picks = [], t2Picks = [];
+    if (Math.abs(gap) / avgVal > 0.20) {
+        const addingTeam = gap > 0 ? t2 : t1;
+        const picks = _gatherPicks(addingTeam, Math.abs(gap) * 0.75, 2, g);
+        if (!picks) return null;
+        if (gap > 0) t2Picks = picks; else t1Picks = picks;
+    }
+    return { t1Assets: { players: [p1], picks: t1Picks }, t2Assets: { players: [p2], picks: t2Picks } };
+}
+
+// 2-for-1: one side sends 2 players whose combined value matches a single better player
+function cpuDeal_TwoForOne(t1, t2, mode1, mode2, g) {
+    const tryOrder = (giver2, receiver1) => {
+        if (giver2.roster.length < 8 || receiver1.roster.length < 2) return null;
+        const star = pickOfferPlayer(receiver1, getTeamMode(giver2, g));
+        if (!star) return null;
+        const starVal = cpuPlayerValue(star);
+        if (starVal < 80) return null;
+
+        const candidates = [...giver2.roster]
+            .filter(p => p.id !== star.id)
+            .map(p => ({ p, v: cpuPlayerValue(p) }))
+            .sort((a, b) => b.v - a.v);
+
+        for (let i = 0; i < Math.min(candidates.length - 1, 5); i++) {
+            const a = candidates[i];
+            for (let j = i + 1; j < Math.min(candidates.length, 6); j++) {
+                const b = candidates[j];
+                const combined = a.v + b.v;
+                if (combined === 0) continue;
+                if (Math.abs(combined - starVal) / Math.max(combined, starVal) <= 0.40) {
+                    return giver2 === t1
+                        ? { t1Assets: { players: [a.p, b.p], picks: [] }, t2Assets: { players: [star], picks: [] } }
+                        : { t1Assets: { players: [star], picks: [] }, t2Assets: { players: [a.p, b.p], picks: [] } };
+                }
+            }
+        }
+        return null;
+    };
+
+    if (mode1 !== mode2) {
+        const winNow = mode1 === "win_now" ? t1 : mode2 === "win_now" ? t2 : null;
+        const rebuild = mode1 === "rebuilding" ? t1 : mode2 === "rebuilding" ? t2 : null;
+        if (winNow && rebuild) return tryOrder(winNow, rebuild) || tryOrder(rebuild, winNow);
+        // One team is retooling — try both directions
+        return tryOrder(t1, t2) || tryOrder(t2, t1);
+    }
+    return tryOrder(t1, t2) || tryOrder(t2, t1);
+}
+
+// Rebuilding team dumps a veteran for draft picks from a win-now team
+function cpuDeal_PlayerForPicks(t1, t2, mode1, mode2, g) {
+    const tryDump = (seller, buyer) => {
+        const dumpable = [...seller.roster]
+            .filter(p => p.ovr >= 72 && p.age >= 26)
+            .sort((a, b) => b.ovr - a.ovr);
+        if (!dumpable.length) return null;
+        const dumpPlayer = dumpable[Math.floor(Math.random() * Math.min(dumpable.length, 3))];
+        const pVal = cpuPlayerValue(dumpPlayer);
+        if (pVal < 50) return null;
+        const picks = _gatherPicks(buyer, pVal * 0.75, 3, g);
+        if (!picks || !picks.length) return null;
+        return seller === t1
+            ? { t1Assets: { players: [dumpPlayer], picks: [] }, t2Assets: { players: [], picks } }
+            : { t1Assets: { players: [], picks }, t2Assets: { players: [dumpPlayer], picks: [] } };
+    };
+
+    if (mode1 === "rebuilding" && mode2 === "win_now") return tryDump(t1, t2);
+    if (mode2 === "rebuilding" && mode1 === "win_now") return tryDump(t2, t1);
+    // Retooling teams occasionally sell veterans to win-now teams
+    if (mode1 === "retooling" && mode2 === "win_now" && Math.random() < 0.15) return tryDump(t1, t2);
+    if (mode2 === "retooling" && mode1 === "win_now" && Math.random() < 0.15) return tryDump(t2, t1);
+    if (Math.random() < 0.25) return tryDump(t1, t2) || tryDump(t2, t1);
+    return null;
+}
+
+// Pick-for-pick: 1-for-1 close value swap, or R1 for 2xR2
+function cpuDeal_PickSwap(t1, t2, g) {
+    const p1s = (t1.assets?.picks || []).filter(pk => pk.year >= g.year)
+        .map(pk => ({ pk, val: cpuPickValue(pk, g.year) })).sort((a, b) => b.val - a.val);
+    const p2s = (t2.assets?.picks || []).filter(pk => pk.year >= g.year)
+        .map(pk => ({ pk, val: cpuPickValue(pk, g.year) })).sort((a, b) => b.val - a.val);
+    if (!p1s.length || !p2s.length) return null;
+
+    // 1-for-1 swap where values are within 20%
+    for (const a of p1s.slice(0, 3)) {
+        for (const b of p2s.slice(0, 3)) {
+            if (a.pk.id === b.pk.id) continue;
+            if (Math.abs(a.val - b.val) / Math.max(a.val, b.val) <= 0.20) {
+                return { t1Assets: { players: [], picks: [a.pk] }, t2Assets: { players: [], picks: [b.pk] } };
+            }
+        }
+    }
+
+    // R1 for 2xR2 (either direction)
+    const tryR1for2R2 = (r1side, r2side, t1gives) => {
+        const r1 = r1side.find(x => x.pk.round === 1);
+        const r2s = r2side.filter(x => x.pk.round === 2);
+        if (!r1 || r2s.length < 2) return null;
+        const twoR2val = r2s[0].val + r2s[1].val;
+        if (Math.abs(r1.val - twoR2val) / Math.max(r1.val, twoR2val) > 0.35) return null;
+        return t1gives
+            ? { t1Assets: { players: [], picks: [r1.pk] }, t2Assets: { players: [], picks: [r2s[0].pk, r2s[1].pk] } }
+            : { t1Assets: { players: [], picks: [r2s[0].pk, r2s[1].pk] }, t2Assets: { players: [], picks: [r1.pk] } };
+    };
+
+    return tryR1for2R2(p1s, p2s, true) || tryR1for2R2(p2s, p1s, false);
 }
 
 // OVR with a small bump for young high-potential players, used for rotation priority
@@ -748,6 +1065,13 @@ export function spendHours(n){
   return need === 0;
 }
 
+export function isTradeWindowOpen(){
+  const g = STATE.game;
+  if (g.phase === PHASES.PLAYOFFS) return false;
+  if (g.phase === PHASES.REGULAR && g.week > TRADE_DEADLINE_WEEK) return false;
+  return true;
+}
+
 export function advanceWeek(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
@@ -756,7 +1080,8 @@ export function advanceWeek(){
   // It means we are at the "End of Season" checkpoint waiting for user to start playoffs.
   if (g.week <= g.seasonWeeks) {
       simWeekGames(g);
-      simCpuTrades(g); 
+      if (g.week <= TRADE_DEADLINE_WEEK) simCpuTrades(g);
+      if (g.week === 5) simCpuExtensions(g);
       expireIntlFoundProspects(g);
   }
 

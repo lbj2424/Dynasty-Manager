@@ -1,11 +1,20 @@
 import { el, card, button, badge, interestBar, showPlayerModal } from "../components.js";
-import { getState, executeTrade } from "../../state.js";
+import { getState, executeTrade, isTradeWindowOpen } from "../../state.js";
 import { clamp } from "../../utils.js";
+import { TRADE_DEADLINE_WEEK } from "../../data/constants.js";
 
 export function TradeScreen(){
   const s = getState();
   const g = s.game;
   const userTeam = g.league.teams[g.userTeamIndex];
+
+  if (!isTradeWindowOpen()) {
+    const isPlayoffs = g.phase === "PLAYOFFS";
+    const msg = isPlayoffs
+      ? "Trades are not allowed during the playoffs."
+      : `The trade deadline was Week ${TRADE_DEADLINE_WEEK}. Trades resume during Free Agency.`;
+    return card("Trade Deadline Passed", msg, []);
+  }
 
   if (!s.tempTradeState) {
     const firstCpu = g.league.teams.find(t => t.id !== userTeam.id);
