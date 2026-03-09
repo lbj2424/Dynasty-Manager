@@ -677,7 +677,7 @@ function simCpuExtensions(g) {
 }
 
 function simCpuTrades(g){
-    if (Math.random() > 0.30) return;
+    if (Math.random() > 0.45) return;
     const aiTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
     if (aiTeams.length < 2) return;
 
@@ -706,8 +706,8 @@ function simCpuTrades(g){
 
         const t1OutSal = deal.t1Assets.players.reduce((s, p) => s + (p.contract?.salary || 0), 0);
         const t2OutSal = deal.t2Assets.players.reduce((s, p) => s + (p.contract?.salary || 0), 0);
-        if ((t1.cap.payroll - t1OutSal + t2OutSal) > SALARY_CAP) continue;
-        if ((t2.cap.payroll - t2OutSal + t1OutSal) > SALARY_CAP) continue;
+        if ((t1.cap.payroll - t1OutSal + t2OutSal) > SALARY_CAP + 5) continue;
+        if ((t2.cap.payroll - t2OutSal + t1OutSal) > SALARY_CAP + 5) continue;
 
         const t1Net = deal.t2Assets.players.length - deal.t1Assets.players.length;
         const t2Net = deal.t1Assets.players.length - deal.t2Assets.players.length;
@@ -786,7 +786,7 @@ function cpuDeal_TwoForOne(t1, t2, mode1, mode2, g) {
         const star = pickOfferPlayer(receiver1, getTeamMode(giver2, g));
         if (!star) return null;
         const starVal = cpuPlayerValue(star);
-        if (starVal < 80) return null;
+        if (starVal < 70) return null;
 
         const candidates = [...giver2.roster]
             .filter(p => p.id !== star.id)
