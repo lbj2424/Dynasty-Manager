@@ -87,9 +87,11 @@ export function DashboardScreen(){
     el("div", { class:"sep" }),
     el("div", {}, [
       el("div", { class:"h2" }, "Inbox"),
-      ...(g.inbox.length
-        ? g.inbox.slice(0, 8).map(m => el("div", { class:"p" }, `• ${m.msg}`))
-        : [el("div", { class:"p" }, "No messages yet.")])
+      el("div", { style:"max-height:400px; overflow-y:auto;" },
+        g.inbox.length
+          ? g.inbox.map(m => el("div", { class:"p" }, `• ${m.msg}`))
+          : [el("div", { class:"p" }, "No messages yet.")]
+      )
     ])
   ]));
 
