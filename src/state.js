@@ -736,69 +736,78 @@ function simCpuRosterCuts(g) {
 
 function simCpuTrades(g, week){
     const nearDeadline = week >= 16 && week <= TRADE_DEADLINE_WEEK;
-    if (Math.random() > (nearDeadline ? 0.75 : 0.45)) return;
     const aiTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
     if (aiTeams.length < 2) return;
 
-    const idx1 = Math.floor(Math.random() * aiTeams.length);
-    let idx2 = Math.floor(Math.random() * (aiTeams.length - 1));
-    if (idx2 >= idx1) idx2++;
-    const t1 = aiTeams[idx1];
-    const t2 = aiTeams[idx2];
-    const mode1 = getTeamMode(t1, g);
-    const mode2 = getTeamMode(t2, g);
+    // Try multiple random team pairings per call — stop after first successful trade
+    const maxPairs = nearDeadline ? 5 : 3;
+    const shuffled = [...aiTeams].sort(() => 0.5 - Math.random());
 
-    const dealFns = [
-        () => cpuDeal_PlayerSwap(t1, t2, mode1, mode2, g),
-        () => cpuDeal_TwoForOne(t1, t2, mode1, mode2, g),
-        () => cpuDeal_PlayerForPicks(t1, t2, mode1, mode2, g),
-        () => cpuDeal_PickSwap(t1, t2, g),
-        () => cpuDeal_BuyLow(t1, t2, mode1, mode2, g),
-    ];
-    for (let i = dealFns.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [dealFns[i], dealFns[j]] = [dealFns[j], dealFns[i]];
-    }
+    for (let pair = 0; pair < maxPairs; pair++) {
+        // Each pairing still has a random gate, but we try several before giving up
+        const tradeChance = nearDeadline ? 0.70 : 0.50;
+        if (Math.random() > tradeChance) continue;
 
-    for (const fn of dealFns) {
-        const deal = fn();
-        if (!deal) continue;
+        const idx1 = pair % shuffled.length;
+        const idx2 = (pair + Math.floor(shuffled.length / 2)) % shuffled.length;
+        if (idx1 === idx2) continue;
+        const t1 = shuffled[idx1];
+        const t2 = shuffled[idx2];
+        const mode1 = getTeamMode(t1, g);
+        const mode2 = getTeamMode(t2, g);
 
-        const t1OutSal = deal.t1Assets.players.reduce((s, p) => s + (p.contract?.salary || 0), 0);
-        const t2OutSal = deal.t2Assets.players.reduce((s, p) => s + (p.contract?.salary || 0), 0);
-        if ((t1.cap.payroll - t1OutSal + t2OutSal) > SALARY_CAP + 5) continue;
-        if ((t2.cap.payroll - t2OutSal + t1OutSal) > SALARY_CAP + 5) continue;
-
-        const t1Net = deal.t2Assets.players.length - deal.t1Assets.players.length;
-        const t2Net = deal.t1Assets.players.length - deal.t2Assets.players.length;
-        if (t1.roster.length + t1Net > 15 || t2.roster.length + t2Net > 15) continue;
-        if (t1.roster.length + t1Net < 5 || t2.roster.length + t2Net < 5) continue;
-
-        // Both teams must retain at least 1 player at each position after the trade
-        const sendIds1 = new Set(deal.t1Assets.players.map(p => p.id));
-        const sendIds2 = new Set(deal.t2Assets.players.map(p => p.id));
-        const t1PostRoster = [
-            ...t1.roster.filter(p => !sendIds1.has(p.id)),
-            ...deal.t2Assets.players
+        const dealFns = [
+            () => cpuDeal_PlayerSwap(t1, t2, mode1, mode2, g),
+            () => cpuDeal_TwoForOne(t1, t2, mode1, mode2, g),
+            () => cpuDeal_PlayerForPicks(t1, t2, mode1, mode2, g),
+            () => cpuDeal_PickSwap(t1, t2, g),
+            () => cpuDeal_BuyLow(t1, t2, mode1, mode2, g),
         ];
-        const t2PostRoster = [
-            ...t2.roster.filter(p => !sendIds2.has(p.id)),
-            ...deal.t1Assets.players
-        ];
-        const hasAllPos = (roster) => ["PG","SG","SF","PF","C"].every(pos => roster.some(p => p.pos === pos));
-        if (!hasAllPos(t1PostRoster) || !hasAllPos(t2PostRoster)) continue;
+        for (let i = dealFns.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [dealFns[i], dealFns[j]] = [dealFns[j], dealFns[i]];
+        }
 
-        executeTrade(t1.id, t2.id, deal.t1Assets, deal.t2Assets);
+        for (const fn of dealFns) {
+            const deal = fn();
+            if (!deal) continue;
 
-        const fmtSide = (assets) => [
-            ...assets.players.map(p => p.name),
-            ...assets.picks.map(pk => `${pk.year} R${pk.round}`)
-        ].join(' + ') || '(nothing)';
-        g.inbox.unshift({
-            t: Date.now(),
-            msg: `TRADE: ${t1.name} sends ${fmtSide(deal.t1Assets)} to ${t2.name} for ${fmtSide(deal.t2Assets)}.`
-        });
-        return;
+            const t1OutSal = deal.t1Assets.players.reduce((s, p) => s + (p.contract?.salary || 0), 0);
+            const t2OutSal = deal.t2Assets.players.reduce((s, p) => s + (p.contract?.salary || 0), 0);
+            if ((t1.cap.payroll - t1OutSal + t2OutSal) > SALARY_CAP + 10) continue;
+            if ((t2.cap.payroll - t2OutSal + t1OutSal) > SALARY_CAP + 10) continue;
+
+            const t1Net = deal.t2Assets.players.length - deal.t1Assets.players.length;
+            const t2Net = deal.t1Assets.players.length - deal.t2Assets.players.length;
+            if (t1.roster.length + t1Net > 15 || t2.roster.length + t2Net > 15) continue;
+            if (t1.roster.length + t1Net < 5 || t2.roster.length + t2Net < 5) continue;
+
+            const sendIds1 = new Set(deal.t1Assets.players.map(p => p.id));
+            const sendIds2 = new Set(deal.t2Assets.players.map(p => p.id));
+            const t1PostRoster = [
+                ...t1.roster.filter(p => !sendIds1.has(p.id)),
+                ...deal.t2Assets.players
+            ];
+            const t2PostRoster = [
+                ...t2.roster.filter(p => !sendIds2.has(p.id)),
+                ...deal.t1Assets.players
+            ];
+            const hasAllPos = (roster) => ["PG","SG","SF","PF","C"].every(pos => roster.some(p => p.pos === pos));
+            if (!hasAllPos(t1PostRoster) || !hasAllPos(t2PostRoster)) continue;
+
+            executeTrade(t1.id, t2.id, deal.t1Assets, deal.t2Assets);
+            g.cpuSeasonTradeCount = (g.cpuSeasonTradeCount || 0) + 1;
+
+            const fmtSide = (assets) => [
+                ...assets.players.map(p => p.name),
+                ...assets.picks.map(pk => `${pk.year} R${pk.round}`)
+            ].join(' + ') || '(nothing)';
+            g.inbox.unshift({
+                t: Date.now(),
+                msg: `TRADE: ${t1.name} sends ${fmtSide(deal.t1Assets)} to ${t2.name} for ${fmtSide(deal.t2Assets)}.`
+            });
+            return; // one trade per call max
+        }
     }
 }
 
@@ -815,7 +824,7 @@ function _gatherPicks(team, targetVal, maxPicks, g) {
         result.push(pk);
         covered += val;
     }
-    return covered >= targetVal * 0.40 ? result : null;
+    return covered >= targetVal * 0.25 ? result : null;
 }
 
 // 1-for-1 player swap, with up to 2 picks added on one side to balance
@@ -833,8 +842,12 @@ function cpuDeal_PlayerSwap(t1, t2, mode1, mode2, g) {
     if (Math.abs(gap) / avgVal > 0.20) {
         const addingTeam = gap > 0 ? t2 : t1;
         const picks = _gatherPicks(addingTeam, Math.abs(gap) * 0.75, 2, g);
-        if (!picks) return null;
-        if (gap > 0) t2Picks = picks; else t1Picks = picks;
+        if (picks) {
+            if (gap > 0) t2Picks = picks; else t1Picks = picks;
+        } else if (Math.abs(gap) / avgVal > 0.45) {
+            return null; // gap too large to do without sweetener
+        }
+        // gap is 20-45% and no picks available — allow the straight swap anyway
     }
     return { t1Assets: { players: [p1], picks: t1Picks }, t2Assets: { players: [p2], picks: t2Picks } };
 }
@@ -1175,7 +1188,15 @@ export function advanceWeek(){
   if (g.week <= g.seasonWeeks) {
       simWeekGames(g);
       checkTradeDemands(g);
-      if (g.week <= TRADE_DEADLINE_WEEK) simCpuTrades(g, g.week);
+      if (g.week <= TRADE_DEADLINE_WEEK) {
+          simCpuTrades(g, g.week);
+          // Guarantee minimum trades: if behind pace, run extra attempts
+          const tradeCount = g.cpuSeasonTradeCount || 0;
+          if ((g.week === 9 && tradeCount < 2) || (g.week === 14 && tradeCount < 4)) {
+              simCpuTrades(g, g.week);
+              simCpuTrades(g, g.week);
+          }
+      }
       if (g.week === 5) simCpuExtensions(g);
       expireIntlFoundProspects(g);
 
@@ -1605,7 +1626,9 @@ export function advanceToNextYear(){
   g.playoffs = null;
   g.offseason.freeAgents = null;
   g.offseason.draft = null;
-  g.offseason.expiring = []; 
+  g.offseason.expiring = [];
+  g.tradeDemandChecked = false;
+  g.cpuSeasonTradeCount = 0;
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
   autoSave();
