@@ -504,11 +504,12 @@ function processEndSeasonRoster(g){
         if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`${p.name}'s contract expired.` });
         
         const fairValue = calculateSalary(p.ovr, p.age);
-        const greed = 0.9 + Math.random() * 0.3; 
-        
+        const greed = 0.9 + Math.random() * 0.3;
+        const prestigeMult = calcAwardPrestige(p);
+
         g.offseason.expiring.push({
             ...p,
-            ask: Number((fairValue * greed).toFixed(2)),
+            ask: Number((fairValue * greed * prestigeMult).toFixed(2)),
             yearsAsk: Math.max(1, Math.min(4, Math.floor(Math.random() * 4) + 1)),
             formerTeamId: t.id,
             signedByTeamId: null,
@@ -568,6 +569,23 @@ export function negotiateExtension(teamId, playerId, execute = true){
     autoSave();
     
     return { success:true, msg:`Signed ${p.name} to ${addYears}y extension ($${askAmount}M/yr).` };
+}
+
+// Award prestige multiplier — players with accolades demand more in free agency
+function calcAwardPrestige(p) {
+    const awards = p.awards || [];
+    let mult = 1.0;
+    const mvps    = awards.filter(a => a.includes("MVP") && !a.includes("DPOY") && !a.includes("OPOY")).length;
+    const allStars = awards.filter(a => a.includes("All-Star")).length;
+    const dpoys   = awards.filter(a => a.includes("DPOY")).length;
+    const opoys   = awards.filter(a => a.includes("OPOY")).length;
+    const roys    = awards.filter(a => a.includes("ROY")).length;
+    mult += mvps    * 0.12; // +12% per MVP
+    mult += Math.min(allStars, 6) * 0.03; // +3% per All-Star, capped at 6
+    mult += dpoys   * 0.07;
+    mult += opoys   * 0.07;
+    mult += roys    * 0.04;
+    return Math.min(mult, 1.50); // cap at +50% premium
 }
 
 // ---- CPU TRADE HELPERS ----
@@ -1097,9 +1115,10 @@ export function releasePlayer(teamId, playerId){
     // Build a FA entry — cut players accept a slight discount to get signed quickly
     const fairValue = calculateSalary(p.ovr, p.age);
     const greed = 0.85 + Math.random() * 0.15;
+    const prestigeMult = calcAwardPrestige(p);
     const faEntry = {
         ...p,
-        ask: Number((fairValue * greed).toFixed(2)),
+        ask: Number((fairValue * greed * prestigeMult).toFixed(2)),
         yearsAsk: Math.max(1, Math.min(3, Math.floor(Math.random() * 3) + 1)),
         signedByTeamId: null,
         contract: null,
