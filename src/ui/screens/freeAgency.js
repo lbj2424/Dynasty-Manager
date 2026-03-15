@@ -157,12 +157,12 @@ function showNegotiationModal(p, team, g, onClose){
         if (p.offers && p.offers.length > 0) {
             content.appendChild(el("div", { class:"h2", style:"font-size:1em;" }, "Competing Offers:"));
             p.offers.forEach(o => {
-                content.appendChild(el("div", { class:"badge", style:"display:block; margin-bottom:4px;" }, 
+                content.appendChild(el("div", { class:"badge", style:"display:block; margin-bottom:4px;" },
                     `${o.teamName}: $${o.salary}M / ${o.years}y`
                 ));
             });
         } else {
-            content.appendChild(el("div", { class:"p", style:"opacity:0.6" }, "No other offers yet."));
+            content.appendChild(el("div", { class:"p", style:"color:var(--good); font-size:0.9em;" }, "No other offers — player has no leverage. They'll accept ~15% below their ask."));
         }
         content.appendChild(el("div", { class:"sep" }));
 

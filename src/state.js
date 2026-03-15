@@ -47,10 +47,13 @@ export function ensureAppState(loadedOrNull){
       }
     }
 
+    STATE.game.tradeDemandChecked ??= false;
+
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0; t.losses ??= 0;
       t.assets ??= { picks: generateFuturePicks(t.id, STATE.game.year) };
       t.cap ??= { cap: SALARY_CAP, payroll: 0 };
+      t.momentum ??= 0;
 
       let needsRotationFix = false;
       t.roster?.forEach(p => {
@@ -169,6 +172,7 @@ export function calculateAllStars(g) {
     const selectForConf = (conf) => {
         const confPlayers = allPlayers.filter(x => x.conf === conf).sort((a, b) => b.score - a.score);
         const selected = [];
+        const snubs = [];
         const posCounts = { PG:0, SG:0, SF:0, PF:0, C:0 };
 
         // Need exactly 3 per position (3 x 5 = 15 roster spots)
@@ -177,22 +181,29 @@ export function calculateAllStars(g) {
             if (posCounts[pos] < 3) {
                 selected.push({ ...cand.player, teamName: cand.teamName });
                 posCounts[pos]++;
-                
+
                 // Add Award to player model
                 cand.player.awards ??= [];
                 const awardStr = `${g.year} All-Star`;
                 if (!cand.player.awards.includes(awardStr)) {
                     cand.player.awards.push(awardStr);
                 }
+            } else if (posCounts[pos] === 3 && snubs.filter(s => s.pos === pos).length === 0) {
+                // Track the first snub at each position (the player who just missed)
+                snubs.push({ ...cand.player, teamName: cand.teamName });
             }
-            if (selected.length === 15) break;
+            if (selected.length === 15 && snubs.length >= 5) break;
         }
-        return selected;
+        return { players: selected, snubs };
     };
 
+    const eastResult = selectForConf("EAST");
+    const westResult = selectForConf("WEST");
     return {
-        east: selectForConf("EAST"),
-        west: selectForConf("WEST")
+        east: eastResult.players,
+        west: westResult.players,
+        eastSnubs: eastResult.snubs,
+        westSnubs: westResult.snubs
     };
 }
 
@@ -381,12 +392,14 @@ export function calculateSignChance(player, offerSalary, offerYears){
         if (s > bestCpuScore) bestCpuScore = s;
     }
 
-    const target = Math.max(askScore, bestCpuScore);
+    // No competing offers = player is desperate, will accept 15% below their ask
+    const noCompetition = bestCpuScore === 0;
+    const target = noCompetition ? askScore * 0.85 : Math.max(askScore, bestCpuScore);
     if (target === 0) return 100;
 
     const ratio = userScore / target;
     let chance = (ratio - 0.85) / (1.15 - 0.85) * 100;
-    
+
     return clamp(Math.round(chance), 0, 100);
 }
 
@@ -507,10 +520,16 @@ function processEndSeasonRoster(g){
     }
     
     t.roster = nextRoster;
+    // Clear trade demands for next season
+    for (const p of t.roster) { p.tradeDemand = false; }
     autoDistributeMinutes(t);
     recalcPayroll(t);
     updateTeamRating(t);
   }
+
+  // CPU teams cut dead weight after processing rosters
+  simCpuRosterCuts(g);
+  g.tradeDemandChecked = false;
 }
 
 export function negotiateExtension(teamId, playerId, execute = true){
@@ -676,8 +695,48 @@ function simCpuExtensions(g) {
     }
 }
 
-function simCpuTrades(g){
-    if (Math.random() > 0.45) return;
+// CPU teams cut overpaid/bloated players at end of season to free cap space
+function simCpuRosterCuts(g) {
+    const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+    for (const team of cpuTeams) {
+        // Cut down to 15 if over-rostered (keep highest-value players)
+        while (team.roster.length > 15) {
+            const worst = team.roster.reduce((a, b) => cpuPlayerValue(a) < cpuPlayerValue(b) ? a : b);
+            team.roster = team.roster.filter(p => p.id !== worst.id);
+        }
+
+        // Cut worst value-per-salary players if still over hard cap + soft cap buffer
+        if (team.cap.payroll > SALARY_CAP + 20) {
+            const byValueRatio = [...team.roster].sort((a, b) => {
+                const ratioA = (a.contract?.salary || 0) / Math.max(1, cpuPlayerValue(a));
+                const ratioB = (b.contract?.salary || 0) / Math.max(1, cpuPlayerValue(b));
+                return ratioB - ratioA; // worst salary efficiency first
+            });
+            for (const p of byValueRatio) {
+                if (team.roster.length <= 8 || team.cap.payroll <= SALARY_CAP + 20) break;
+                team.roster = team.roster.filter(x => x.id !== p.id);
+                recalcPayroll(team);
+            }
+        }
+
+        // Also cut clearly overpaid aging players even within cap (cap hygiene)
+        if (team.cap.payroll > SALARY_CAP * 0.95) {
+            const deadWeight = team.roster.filter(p =>
+                p.age >= 34 && p.ovr < 74 && (p.contract?.salary || 0) > 8 && team.roster.length > 8
+            );
+            for (const p of deadWeight) {
+                team.roster = team.roster.filter(x => x.id !== p.id);
+            }
+        }
+
+        recalcPayroll(team);
+        updateTeamRating(team);
+    }
+}
+
+function simCpuTrades(g, week){
+    const nearDeadline = week >= 16 && week <= TRADE_DEADLINE_WEEK;
+    if (Math.random() > (nearDeadline ? 0.75 : 0.45)) return;
     const aiTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
     if (aiTeams.length < 2) return;
 
@@ -694,6 +753,7 @@ function simCpuTrades(g){
         () => cpuDeal_TwoForOne(t1, t2, mode1, mode2, g),
         () => cpuDeal_PlayerForPicks(t1, t2, mode1, mode2, g),
         () => cpuDeal_PickSwap(t1, t2, g),
+        () => cpuDeal_BuyLow(t1, t2, mode1, mode2, g),
     ];
     for (let i = dealFns.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -843,6 +903,40 @@ function cpuDeal_PlayerForPicks(t1, t2, mode1, mode2, g) {
     if (mode2 === "retooling" && mode1 === "win_now" && Math.random() < 0.15) return tryDump(t2, t1);
     if (Math.random() < 0.25) return tryDump(t1, t2) || tryDump(t2, t1);
     return null;
+}
+
+// Buy low: win-now team targets an unhappy or demanding player at a discount
+function cpuDeal_BuyLow(t1, t2, mode1, mode2, g) {
+    const tryBuyLow = (buyer, seller, buyerMode) => {
+        if (buyerMode !== "win_now") return null;
+        // Find an unhappy or trade-demanding player on the seller's team
+        const targets = [...seller.roster]
+            .filter(p => p.ovr >= 75 && ((p.happiness ?? 70) < 40 || p.tradeDemand))
+            .sort((a, b) => b.ovr - a.ovr);
+        if (!targets.length) return null;
+        const target = targets[0];
+        // Value the player at a 20% discount due to unhappiness
+        const pVal = cpuPlayerValue(target) * 0.80;
+        if (pVal < 60) return null;
+
+        const isSafe = (p) => seller.roster.filter(x => x.pos === p.pos && x.id !== p.id).length >= 1;
+        if (!isSafe(target)) return null;
+
+        // Buyer offers a player + picks for the discounted target
+        const offerPlayer = pickOfferPlayer(buyer, getTeamMode(seller, g));
+        if (!offerPlayer) return null;
+        const offerVal = cpuPlayerValue(offerPlayer);
+        const gap = pVal - offerVal;
+        let extraPicks = [];
+        if (gap > 30) {
+            extraPicks = _gatherPicks(buyer, gap * 0.60, 2, g) || [];
+        }
+
+        return buyer === t1
+            ? { t1Assets: { players: [offerPlayer], picks: extraPicks }, t2Assets: { players: [target], picks: [] } }
+            : { t1Assets: { players: [target], picks: [] }, t2Assets: { players: [offerPlayer], picks: extraPicks } };
+    };
+    return tryBuyLow(t1, t2, mode1) || tryBuyLow(t2, t1, mode2);
 }
 
 // Pick-for-pick: 1-for-1 close value swap, or R1 for 2xR2
@@ -1080,9 +1174,17 @@ export function advanceWeek(){
   // It means we are at the "End of Season" checkpoint waiting for user to start playoffs.
   if (g.week <= g.seasonWeeks) {
       simWeekGames(g);
-      if (g.week <= TRADE_DEADLINE_WEEK) simCpuTrades(g);
+      checkTradeDemands(g);
+      if (g.week <= TRADE_DEADLINE_WEEK) simCpuTrades(g, g.week);
       if (g.week === 5) simCpuExtensions(g);
       expireIntlFoundProspects(g);
+
+      // Trade deadline buzz notifications
+      if (g.week === 15) {
+          g.inbox.unshift({ t: Date.now(), msg: `TRADE DEADLINE: 3 weeks remaining to make deals. Deadline is Week ${TRADE_DEADLINE_WEEK}.` });
+      } else if (g.week === 17) {
+          g.inbox.unshift({ t: Date.now(), msg: `TRADE DEADLINE: Final week! All trades must be completed before Week ${TRADE_DEADLINE_WEEK} ends.` });
+      }
   }
 
   g.week += 1;
@@ -1139,6 +1241,31 @@ function shuffle(a){
   }
 }
 
+function checkTradeDemands(g) {
+    if (g.tradeDemandChecked) return;
+    if (g.week < 8) return; // give players time to settle in
+    g.tradeDemandChecked = true;
+
+    const userTeamId = g.league.teams[g.userTeamIndex].id;
+
+    for (const team of g.league.teams) {
+        for (const p of team.roster) {
+            const isStarUnhappy = p.ovr >= 80 && (p.happiness ?? 70) < 35;
+            const isGoodPlayerMiserable = p.ovr >= 74 && (p.happiness ?? 70) < 20;
+            if (!isStarUnhappy && !isGoodPlayerMiserable) continue;
+            if (p.tradeDemand) continue; // already demanding
+
+            p.tradeDemand = true;
+
+            if (team.id === userTeamId) {
+                g.inbox.unshift({ t: Date.now(), msg: `TRADE DEMAND: ${p.name} (OVR ${p.ovr}) is unhappy and wants out! Consider trading him or improving team morale.` });
+            } else {
+                g.inbox.unshift({ t: Date.now(), msg: `TRADE DEMAND: ${p.name} (${team.name}, OVR ${p.ovr}) has requested a trade.` });
+            }
+        }
+    }
+}
+
 function simWeekGames(g){
   const wk = g.week;
   const bundle = g.schedule.find(x => x.week === wk);
@@ -1177,6 +1304,10 @@ function simWeekGames(g){
 
     if (aWin){ A.wins += 1; B.losses += 1; }
     else { B.wins += 1; A.losses += 1; }
+
+    // Momentum: win streaks slightly boost performance, losing streaks hurt
+    A.momentum = Math.max(-3, Math.min(3, (A.momentum || 0) + (aWin ? 0.5 : -0.5)));
+    B.momentum = Math.max(-3, Math.min(3, (B.momentum || 0) + (aWin ? -0.5 : 0.5)));
 
     bumpHappiness(A, aWin ? +1 : -1);
     bumpHappiness(B, aWin ? -1 : +1);
@@ -1227,7 +1358,8 @@ function calcTeamPerformance(team){
   }
 
   const defRating = totalMinutes > 0 ? (totalDefSum / totalMinutes) : 60;
-  return { offPoints: totalOffPoints, defRating };
+  const momentumMult = 1.0 + ((team.momentum || 0) * 0.01); // ±3% max
+  return { offPoints: totalOffPoints * momentumMult, defRating };
 }
 
 function bumpHappiness(team, delta){
@@ -1460,12 +1592,14 @@ export function advanceToNextYear(){
 
   for (const t of g.league.teams){
     t.wins = 0; t.losses = 0;
+    t.momentum = 0;
     for (const p of (t.roster || [])){
       p.stats = { gp:0, pts:0, reb:0, ast:0 };
     }
     autoDistributeMinutes(t);
     updateTeamRating(t);
   }
+  g.tradeDemandChecked = false;
 
   g.schedule = generateWeeklySchedule(g.league.teams.map(t => t.id), SEASON_WEEKS);
   g.playoffs = null;
@@ -1513,12 +1647,25 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
       }
   }
 
+  const allTeamRecords = g.league.teams.map(t => ({
+      id: t.id,
+      name: t.name,
+      conference: t.conference,
+      wins: t.wins,
+      losses: t.losses,
+      rating: t.rating,
+      madePlayoffs: g.playoffs
+          ? (g.playoffs.eastSeeds.includes(t.id) || g.playoffs.westSeeds.includes(t.id))
+          : false
+  }));
+
   g.history.push({
     year: g.year,
     userRecord: { wins: userTeam.wins, losses: userTeam.losses },
     userPlayoffFinish: userFinish,
     championTeam: championTeam?.name || "—",
-    awards
+    awards,
+    allTeamRecords
   });
   g.inbox.unshift({ t: Date.now(), msg: `Season ${g.year} awards saved to History.` });
   autoSave();

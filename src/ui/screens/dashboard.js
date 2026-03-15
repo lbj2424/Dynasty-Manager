@@ -5,10 +5,10 @@ import {
   saveToSlot,
   getActiveSaveSlot,
   startPlayoffs,
-  calculateAllStars // NEW: Import logic
+  calculateAllStars
 } from "../../state.js";
 import { formatWeek } from "../../utils.js";
-import { PHASES } from "../../data/constants.js";
+import { PHASES, TRADE_DEADLINE_WEEK } from "../../data/constants.js";
 
 export function DashboardScreen(){
   const s = getState();
@@ -80,7 +80,11 @@ export function DashboardScreen(){
       badge(`Year ${g.year}`),
       g.phase === PHASES.REGULAR ? badge(formatWeek(Math.min(g.week, g.seasonWeeks), g.seasonWeeks)) : null,
       badge(`Hours: ${g.hours.available} avail · ${g.hours.banked} banked (max ${g.hours.bankMax})`),
-      phaseBadge
+      phaseBadge,
+      g.phase === PHASES.REGULAR && g.week >= 15 && g.week <= TRADE_DEADLINE_WEEK
+          ? el("div", { class:"badge", style:"background:var(--warn); font-weight:bold;" },
+              `TRADE DEADLINE: Week ${TRADE_DEADLINE_WEEK} (${TRADE_DEADLINE_WEEK - g.week} week${TRADE_DEADLINE_WEEK - g.week === 1 ? '' : 's'} left)`)
+          : null
     ].filter(Boolean)),
     el("div", { class:"sep" }),
     el("div", { class:"row" }, topButtons),
@@ -99,15 +103,15 @@ export function DashboardScreen(){
 }
 
 function showAllStarModal(allStars, onClose) {
-    const overlay = el("div", { 
-        style: "position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); z-index:999; display:flex; justify-content:center; align-items:center;" 
+    const overlay = el("div", {
+        style: "position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); z-index:999; display:flex; justify-content:center; align-items:center;"
     }, []);
 
     const renderRoster = (title, list) => {
         return el("div", { style:"flex:1; min-width:200px;" }, [
             el("div", { class:"h2", style:"text-align:center; border-bottom:1px solid var(--line); padding-bottom:4px;" }, title),
-            ...list.map(p => el("div", { 
-                class:"p", 
+            ...list.map(p => el("div", {
+                class:"p",
                 style:"display:flex; justify-content:space-between; cursor:pointer;",
                 onclick: () => showPlayerModal(p)
             }, [
@@ -117,13 +121,29 @@ function showAllStarModal(allStars, onClose) {
         ]);
     };
 
-    const modal = el("div", { class:"card", style:"width:600px; max-width:90%; max-height:80vh; overflow-y:auto;" }, [
+    const renderSnubs = (title, snubs) => {
+        if (!snubs || !snubs.length) return null;
+        return el("div", { style:"margin-top:12px;" }, [
+            el("div", { class:"h2", style:"font-size:0.9em; color:var(--warn); margin-bottom:4px;" }, title),
+            el("div", { style:"display:flex; flex-wrap:wrap; gap:6px;" },
+                snubs.map(p => el("div", {
+                    class:"badge",
+                    style:"background:rgba(255,165,0,0.15); border:1px solid var(--warn); cursor:pointer; font-size:0.85em;",
+                    onclick: () => showPlayerModal(p)
+                }, `${p.pos} ${p.name} (${p.teamName})`))
+            )
+        ]);
+    };
+
+    const modal = el("div", { class:"card", style:"width:650px; max-width:90%; max-height:80vh; overflow-y:auto;" }, [
         el("div", { class:"h2", style:"text-align:center; font-size:1.5em; color:var(--good);" }, "All-Star Rosters Announced!"),
         el("div", { class:"sep" }),
         el("div", { style:"display:flex; gap:20px; flex-wrap:wrap;" }, [
             renderRoster("Eastern Conference", allStars.east),
             renderRoster("Western Conference", allStars.west)
         ]),
+        renderSnubs("East Snubs (just missed)", allStars.eastSnubs),
+        renderSnubs("West Snubs (just missed)", allStars.westSnubs),
         el("div", { class:"sep" }),
         button("Continue to Playoffs", {
             primary: true,
