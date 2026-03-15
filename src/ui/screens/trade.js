@@ -77,7 +77,9 @@ export function TradeScreen(){
   root.appendChild(card("Trade Desk", "Select a team to trade with.", [
       el("div", { class:"row" }, [
           el("span", { class:"p" }, "Trade Partner: "),
-          partnerSelect
+          partnerSelect,
+          el("span", { class:"badge", style:"margin-left:8px;" }, `${partner.wins}-${partner.losses}`),
+          el("span", { class:"badge", style:"margin-left:4px; opacity:0.7;" }, `OVR ${partner.rating}`)
       ])
   ]));
 

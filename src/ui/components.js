@@ -131,7 +131,21 @@ export function showPlayerModal(player) {
             el("span", {}, " | "),
             el("span", { style:"color:var(--warn)" }, `DEF: ${player.def ?? player.ovr}`),
             el("br",{}),
-            el("span", {}, `Potential: ${player.potentialGrade}`)
+            el("span", {}, `Potential: ${player.potentialGrade}`),
+            el("br",{}),
+            player.contract
+                ? el("span", {}, `Contract: $${player.contract.salary}M / ${player.contract.years} yr${player.contract.years !== 1 ? 's' : ''} remaining`)
+                : el("span", { style:"opacity:0.6" }, "Contract: Free Agent"),
+            el("br",{}),
+            el("span", {}, (() => {
+                const h = player.happiness ?? 70;
+                const color = h >= 70 ? "var(--good)" : h >= 40 ? "var(--warn)" : "var(--bad)";
+                const label = h >= 85 ? "Very Happy" : h >= 70 ? "Happy" : h >= 50 ? "Neutral" : h >= 30 ? "Unhappy" : "Miserable";
+                return el("span", {}, [
+                    el("span", {}, "Happiness: "),
+                    el("span", { style:`color:${color}; font-weight:bold;` }, `${label} (${h})`)
+                ]);
+            })())
         ]),
         // AWARDS SECTION
         awardElements.length > 0 ? el("div", { style:"margin-top:10px;" }, awardElements) : null,
