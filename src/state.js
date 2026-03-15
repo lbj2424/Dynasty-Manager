@@ -241,11 +241,8 @@ export function advanceFaRound(){
   autoSave();
 }
 
-function generateInitialOffers(g){
-    const fa = g.offseason.freeAgents;
-    const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
-
-    const teamNeeds = {}; 
+function buildTeamNeeds(cpuTeams) {
+    const teamNeeds = {};
     for (const t of cpuTeams) {
         const counts = { PG:0, SG:0, SF:0, PF:0, C:0 };
         const bestAtPos = { PG:0, SG:0, SF:0, PF:0, C:0 };
@@ -255,97 +252,86 @@ function generateInitialOffers(g){
         }
         teamNeeds[t.id] = { counts, bestAtPos };
     }
+    return teamNeeds;
+}
 
-    for (const p of fa.pool) {
-        p.offers = [];
+function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
+    p.offers = [];
 
-        // Bird Rights: former CPU team can re-sign up to soft cap (140M)
-        if (p.formerTeamId) {
-            const formerTeam = cpuTeams.find(t => t.id === p.formerTeamId);
-            if (formerTeam && formerTeam.roster.length < 15) {
-                const birdSpace = (SALARY_CAP + 20) - formerTeam.cap.payroll;
-                let wantsToKeep = p.ovr >= 74 || (p.age <= 25 && ["A+", "A"].includes(p.potentialGrade));
-
-                if (wantsToKeep) {
-                    // Is there a meaningfully better player at the same position still under contract?
-                    const betterAtPos = formerTeam.roster
-                        .filter(r => r.pos === p.pos && r.ovr >= p.ovr + 6 && r.contract?.years >= 1)
-                        .sort((a, b) => b.ovr - a.ovr)[0];
-
-                    if (betterAtPos) {
-                        if (betterAtPos.contract.years >= 3) {
-                            // Already locked in long-term at this position — no need for the lesser player
-                            wantsToKeep = false;
-                        } else {
-                            // Expiring within 1-2 years — check if we can afford both re-signs
-                            const futureAsk = calculateSalary(betterAtPos.ovr, betterAtPos.age + betterAtPos.contract.years);
-                            const spaceAfterResign = birdSpace - p.ask;
-                            if (spaceAfterResign < futureAsk * 0.80) {
-                                // Can't afford the better player if we commit to this one
-                                wantsToKeep = false;
-                            }
-                        }
+    // Bird Rights: former CPU team can re-sign up to soft cap (140M)
+    if (p.formerTeamId) {
+        const formerTeam = cpuTeams.find(t => t.id === p.formerTeamId);
+        if (formerTeam && formerTeam.roster.length < 15) {
+            const birdSpace = (SALARY_CAP + 20) - formerTeam.cap.payroll;
+            let wantsToKeep = p.ovr >= 74 || (p.age <= 25 && ["A+", "A"].includes(p.potentialGrade));
+            if (wantsToKeep) {
+                const betterAtPos = formerTeam.roster
+                    .filter(r => r.pos === p.pos && r.ovr >= p.ovr + 6 && r.contract?.years >= 1)
+                    .sort((a, b) => b.ovr - a.ovr)[0];
+                if (betterAtPos) {
+                    if (betterAtPos.contract.years >= 3) {
+                        wantsToKeep = false;
+                    } else {
+                        const futureAsk = calculateSalary(betterAtPos.ovr, betterAtPos.age + betterAtPos.contract.years);
+                        if ((birdSpace - p.ask) < futureAsk * 0.80) wantsToKeep = false;
                     }
                 }
-
-                if (wantsToKeep && birdSpace >= p.ask) {
-                    const offerSal = Number((p.ask * (1.05 + Math.random() * 0.05)).toFixed(2));
-                    p.offers.push({
-                        teamId: formerTeam.id,
-                        teamName: formerTeam.name,
-                        salary: Math.min(offerSal, Number(birdSpace.toFixed(2))),
-                        years: p.yearsAsk,
-                        isBirdRights: true
-                    });
-                }
             }
-        }
-
-        let demandChance = 0;
-        if (p.ovr >= 85) demandChance = 0.95;
-        else if (p.ovr >= 80) demandChance = 0.70;
-        else if (p.ovr >= 75) demandChance = 0.40;
-        else if (p.ovr >= 70) demandChance = 0.15;
-        else demandChance = 0.05;
-
-        if (Math.random() > demandChance) continue;
-
-        const numOffers = Math.floor(Math.random() * 3) + 1;
-        const shuffled = [...cpuTeams].sort(() => 0.5 - Math.random());
-        
-        for (const t of shuffled) {
-            if (p.offers.length >= numOffers) break;
-
-            const needs = teamNeeds[t.id];
-            const posCount = needs.counts[p.pos] || 0;
-            const currentStarterOvr = needs.bestAtPos[p.pos] || 0;
-
-            if (posCount >= 4) continue;
-
-            if (posCount >= 2 && p.ovr < currentStarterOvr) {
-                if (Math.random() > 0.3) continue;
-            }
-
-            let interestBoost = 1.0;
-            if (posCount <= 1) interestBoost = 1.5;
-            if (p.ovr > 80 && p.ovr > currentStarterOvr + 3) interestBoost = 2.0;
-
-            const capSpace = t.cap.cap - t.cap.payroll;
-            let salaryMult;
-            if (interestBoost >= 2.0) salaryMult = 1.15 + Math.random() * 0.10; // desperate: 1.15–1.25x ask
-            else if (interestBoost >= 1.5) salaryMult = 1.05 + Math.random() * 0.10; // interested: 1.05–1.15x ask
-            else salaryMult = 0.90 + Math.random() * 0.20; // normal: 0.90–1.10x ask
-            const offerAmount = p.ask * salaryMult;
-            
-            if (capSpace > offerAmount && t.roster.length < 15) {
+            if (wantsToKeep && birdSpace >= p.ask) {
+                const offerSal = Number((p.ask * (1.05 + Math.random() * 0.05)).toFixed(2));
                 p.offers.push({
-                    teamId: t.id,
-                    teamName: t.name,
-                    salary: Number(offerAmount.toFixed(2)),
-                    years: p.yearsAsk, 
+                    teamId: formerTeam.id, teamName: formerTeam.name,
+                    salary: Math.min(offerSal, Number(birdSpace.toFixed(2))),
+                    years: p.yearsAsk, isBirdRights: true
                 });
             }
         }
+    }
+
+    let demandChance = 0;
+    if (p.ovr >= 85) demandChance = 0.95;
+    else if (p.ovr >= 80) demandChance = 0.70;
+    else if (p.ovr >= 75) demandChance = 0.40;
+    else if (p.ovr >= 70) demandChance = 0.15;
+    else demandChance = 0.05;
+
+    if (Math.random() > demandChance) return;
+
+    const numOffers = Math.floor(Math.random() * 3) + 1;
+    const shuffled = [...cpuTeams].sort(() => 0.5 - Math.random());
+
+    for (const t of shuffled) {
+        if (p.offers.length >= numOffers) break;
+        const needs = teamNeeds[t.id];
+        const posCount = needs.counts[p.pos] || 0;
+        const currentStarterOvr = needs.bestAtPos[p.pos] || 0;
+        if (posCount >= 4) continue;
+        if (posCount >= 2 && p.ovr < currentStarterOvr && Math.random() > 0.3) continue;
+
+        let interestBoost = 1.0;
+        if (posCount <= 1) interestBoost = 1.5;
+        if (p.ovr > 80 && p.ovr > currentStarterOvr + 3) interestBoost = 2.0;
+
+        const capSpace = t.cap.cap - t.cap.payroll;
+        let salaryMult;
+        if (interestBoost >= 2.0) salaryMult = 1.15 + Math.random() * 0.10;
+        else if (interestBoost >= 1.5) salaryMult = 1.05 + Math.random() * 0.10;
+        else salaryMult = 0.90 + Math.random() * 0.20;
+        const offerAmount = p.ask * salaryMult;
+
+        if (capSpace > offerAmount && t.roster.length < 15) {
+            p.offers.push({ teamId: t.id, teamName: t.name, salary: Number(offerAmount.toFixed(2)), years: p.yearsAsk });
+        }
+    }
+}
+
+function generateInitialOffers(g){
+    const fa = g.offseason.freeAgents;
+    const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+    const teamNeeds = buildTeamNeeds(cpuTeams);
+
+    for (const p of fa.pool) {
+        generateOffersForPlayer(g, p, cpuTeams, teamNeeds);
     }
 }
 
@@ -1125,10 +1111,13 @@ export function releasePlayer(teamId, playerId){
         offers: []
     };
 
-    // If FA is already open, drop them straight into the pool; otherwise queue for next offseason
+    // If FA is already open, drop them straight into the pool and generate CPU offers immediately
     if (g.offseason.freeAgents?.pool) {
         g.offseason.freeAgents.pool.push(faEntry);
         g.offseason.freeAgents.pool.sort((a, b) => b.ovr - a.ovr);
+        const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+        const teamNeeds = buildTeamNeeds(cpuTeams);
+        generateOffersForPlayer(g, faEntry, cpuTeams, teamNeeds);
     } else {
         g.offseason.expiring ??= [];
         g.offseason.expiring.push(faEntry);
