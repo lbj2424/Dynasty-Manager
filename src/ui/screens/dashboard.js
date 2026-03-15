@@ -61,10 +61,13 @@ export function DashboardScreen(){
 
   topButtons.push(
     button("My Team", { onClick: () => location.hash = "#/team" }),
-    button("Trade", { onClick: () => location.hash = "#/trade" }), 
+    button("Trade", { onClick: () => location.hash = "#/trade" }),
+    g.phase === PHASES.REGULAR
+        ? button(`Available Players${(g.midseasonFaPool?.length > 0) ? ` (${g.midseasonFaPool.length})` : ""}`, { onClick: () => location.hash = "#/available-players" })
+        : null,
     button("Standings", { onClick: () => location.hash = "#/standings" }),
     button("History", { onClick: () => location.hash = "#/history" }),
-    button("Retired", { onClick: () => location.hash = "#/retired" }), 
+    button("Retired", { onClick: () => location.hash = "#/retired" }),
     button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }),
     button("Save", {
       onClick: () => {
@@ -87,7 +90,7 @@ export function DashboardScreen(){
           : null
     ].filter(Boolean)),
     el("div", { class:"sep" }),
-    el("div", { class:"row" }, topButtons),
+    el("div", { class:"row" }, topButtons.filter(Boolean)),
     el("div", { class:"sep" }),
     el("div", {}, [
       el("div", { class:"h2" }, "Inbox"),

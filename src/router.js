@@ -9,7 +9,8 @@ import { StandingsScreen } from "./ui/screens/standings.js";
 import { HistoryScreen } from "./ui/screens/history.js";
 import { TradeScreen } from "./ui/screens/trade.js"; 
 import { DepthChartScreen } from "./ui/screens/depthChart.js";
-import { RetiredScreen } from "./ui/screens/retired.js"; // <--- ADD IMPORT
+import { RetiredScreen } from "./ui/screens/retired.js";
+import { MidseasonFAScreen } from "./ui/screens/midseasonFA.js";
 
 export const router = {
   "/": () => HomeScreen(),
@@ -23,7 +24,8 @@ export const router = {
   "/history": () => HistoryScreen(),
   "/trade": () => TradeScreen(),
   "/depth-chart": () => DepthChartScreen(),
-  "/retired": () => RetiredScreen(), // <--- ADD ROUTE
+  "/retired": () => RetiredScreen(),
+  "/available-players": () => MidseasonFAScreen(),
 };
 
 export function mountRouter(appEl, routesMap){

@@ -48,6 +48,7 @@ export function ensureAppState(loadedOrNull){
     }
 
     STATE.game.tradeDemandChecked ??= false;
+    STATE.game.midseasonFaPool ??= [];
 
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0; t.losses ??= 0;
@@ -1111,13 +1112,18 @@ export function releasePlayer(teamId, playerId){
         offers: []
     };
 
-    // If FA is already open, drop them straight into the pool and generate CPU offers immediately
     if (g.offseason.freeAgents?.pool) {
+        // FA phase: drop into pool and generate CPU offers immediately
         g.offseason.freeAgents.pool.push(faEntry);
         g.offseason.freeAgents.pool.sort((a, b) => b.ovr - a.ovr);
         const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
         const teamNeeds = buildTeamNeeds(cpuTeams);
         generateOffersForPlayer(g, faEntry, cpuTeams, teamNeeds);
+    } else if (g.phase === PHASES.REGULAR) {
+        // Regular season: add to midseason FA pool so user can browse and sign
+        g.midseasonFaPool ??= [];
+        g.midseasonFaPool.push(faEntry);
+        g.midseasonFaPool.sort((a, b) => b.ovr - a.ovr);
     } else {
         g.offseason.expiring ??= [];
         g.offseason.expiring.push(faEntry);
@@ -1178,6 +1184,31 @@ export function spendHours(n){
     need -= bSpend;
   }
   return need === 0;
+}
+
+export function signMidseasonFreeAgent(playerId, salary, years) {
+    const g = STATE.game;
+    const pool = g.midseasonFaPool || [];
+    const idx = pool.findIndex(p => p.id === playerId);
+    if (idx === -1) return { success: false, msg: "Player not found." };
+
+    const p = pool[idx];
+    const userTeam = g.league.teams[g.userTeamIndex];
+    const capSpace = userTeam.cap.cap - userTeam.cap.payroll;
+
+    if (capSpace < salary) return { success: false, msg: `Not enough cap space. You have $${capSpace.toFixed(1)}M available.` };
+    if (userTeam.roster.length >= 15) return { success: false, msg: "Roster is full (15 players max)." };
+
+    // Remove from pool and sign
+    pool.splice(idx, 1);
+    const signed = { ...p, contract: { salary, years }, stats: { gp:0, pts:0, reb:0, ast:0 }, rotation: { minutes:0, isStarter:false }, signedByTeamId: userTeam.id };
+    signed.happiness = Math.min(100, (signed.happiness ?? 70) + 5);
+    userTeam.roster.push(signed);
+    recalcPayroll(userTeam);
+    autoDistributeMinutes(userTeam);
+    updateTeamRating(userTeam);
+    autoSave();
+    return { success: true, msg: `Signed ${p.name} for $${salary}M / ${years} yr${years !== 1 ? 's' : ''}.` };
 }
 
 export function isTradeWindowOpen(){
@@ -1549,6 +1580,10 @@ export function startDraft(){
   const g = STATE.game;
   g.phase = PHASES.DRAFT;
 
+  // Carry unsigned FA pool players into the midseason pool for next season
+  const unsigned = (g.offseason.freeAgents?.pool || []).filter(p => !p.signedByTeamId);
+  g.midseasonFaPool = unsigned.map(p => ({ ...p, offers: [] }));
+
   const naturalOrderTeams = [...g.league.teams].sort((a,b) => (a.wins - b.wins) || (b.losses - a.losses));
   
   const finalOrderIds = [];
@@ -1637,6 +1672,7 @@ export function advanceToNextYear(){
   g.offseason.expiring = [];
   g.tradeDemandChecked = false;
   g.cpuSeasonTradeCount = 0;
+  g.midseasonFaPool = [];
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
   autoSave();
