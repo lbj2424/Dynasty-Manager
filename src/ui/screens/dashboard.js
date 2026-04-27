@@ -66,9 +66,16 @@ export function DashboardScreen(){
         ? button(`Available Players${(g.midseasonFaPool?.length > 0) ? ` (${g.midseasonFaPool.length})` : ""}`, { onClick: () => location.hash = "#/available-players" })
         : null,
     button("Standings", { onClick: () => location.hash = "#/standings" }),
+    button("League Leaders", { onClick: () => location.hash = "#/league-leaders" }),
     button("History", { onClick: () => location.hash = "#/history" }),
     button("Retired", { onClick: () => location.hash = "#/retired" }),
     button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }),
+    g.lastSeasonRecap
+        ? button(`Season ${g.lastSeasonRecap.year} Recap`, {
+            primary: true,
+            onClick: () => showSeasonRecapModal(g.lastSeasonRecap, () => rerender(root))
+          })
+        : null,
     button("Save", {
       onClick: () => {
         const slot = getActiveSaveSlot() || "A";
@@ -77,6 +84,11 @@ export function DashboardScreen(){
       }
     })
   );
+
+  // Auto-show season recap once when landing on dashboard after playoffs end
+  if (g.lastSeasonRecap && !g.lastSeasonRecap.viewed) {
+    setTimeout(() => showSeasonRecapModal(g.lastSeasonRecap, () => rerender(root)), 50);
+  }
 
   root.appendChild(card("Dashboard", "Regular season → Playoffs → Free Agency → Draft.", [
     el("div", { class:"row" }, [
@@ -157,6 +169,101 @@ function showAllStarModal(allStars, onClose) {
             }
         })
     ]);
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+}
+
+function showSeasonRecapModal(recap, onClose) {
+    recap.viewed = true;
+
+    const overlay = el("div", {
+        style: "position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.85); z-index:999; display:flex; justify-content:center; align-items:center;"
+    }, []);
+
+    const close = () => {
+        if (document.body.contains(overlay)) document.body.removeChild(overlay);
+        onClose();
+    };
+    overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+    const awardRow = (label, val) => val
+        ? el("div", { style: "display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.07);" }, [
+            el("span", { style: "opacity:0.65;" }, label),
+            el("span", { style: "font-weight:bold;" }, `${val.player} (${val.team})`)
+          ])
+        : null;
+
+    const miniStatTable = (leaders, label) => {
+        if (!leaders || !leaders.length) return null;
+        const rows = leaders.slice(0, 3).map((p, i) =>
+            el("div", { style: "display:flex; justify-content:space-between; font-size:0.88em; padding:2px 0;" }, [
+                el("span", { style: "opacity:0.5; width:18px;" }, `${i + 1}.`),
+                el("span", { style: "flex:1;" }, p.name),
+                el("span", { style: "opacity:0.6; font-size:0.85em; margin-right:8px;" }, p.team),
+                el("span", { style: "font-weight:bold; color:var(--accent); width:40px; text-align:right;" }, String(p[label]))
+            ])
+        );
+        return el("div", { style: "flex:1; min-width:140px;" }, rows);
+    };
+
+    const finishColor = recap.userFinish === "Champion" ? "var(--good)"
+        : recap.userFinish === "Finals" ? "var(--accent)"
+        : "var(--text)";
+
+    const modal = el("div", { class: "card", style: "width:620px; max-width:92%; max-height:88vh; overflow-y:auto;" }, [
+        el("div", { style: "text-align:center; padding-bottom:8px;" }, [
+            el("div", { style: "font-size:1.7em; font-weight:bold; color:var(--good);" }, `${recap.year} Season Complete`),
+            el("div", { style: "font-size:1.1em; color:var(--accent); margin-top:4px;" }, `${recap.champion} are Champions!`)
+        ]),
+        el("div", { class: "sep" }),
+
+        el("div", { style: "display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px;" }, [
+            el("div", { class: "card", style: "flex:1; min-width:140px; padding:10px;" }, [
+                el("div", { class: "h2", style: "font-size:0.85em; opacity:0.6; margin-bottom:4px;" }, "YOUR SEASON"),
+                el("div", { style: "font-size:1.4em; font-weight:bold;" }, recap.userRecord),
+                el("div", { style: `color:${finishColor}; font-weight:bold; margin-top:4px;` }, recap.userFinish)
+            ]),
+            el("div", { class: "card", style: "flex:2; min-width:220px; padding:10px;" }, [
+                el("div", { class: "h2", style: "font-size:0.85em; opacity:0.6; margin-bottom:6px;" }, "AWARDS"),
+                awardRow("MVP", recap.awards?.MVP),
+                awardRow("DPOY", recap.awards?.DPOY),
+                awardRow("OPOY", recap.awards?.OPOY),
+                awardRow("ROY", recap.awards?.ROY)
+            ].filter(Boolean))
+        ]),
+
+        recap.statsLeaders ? el("div", { class: "card", style: "padding:10px;" }, [
+            el("div", { class: "h2", style: "font-size:0.85em; opacity:0.6; margin-bottom:8px;" }, "STATS LEADERS (TOP 3)"),
+            el("div", { style: "display:flex; gap:16px; flex-wrap:wrap;" }, [
+                el("div", { style: "flex:1; min-width:140px;" }, [
+                    el("div", { style: "font-size:0.8em; opacity:0.5; margin-bottom:4px;" }, "POINTS PER GAME"),
+                    miniStatTable(recap.statsLeaders.ppg, "ppg")
+                ]),
+                el("div", { style: "flex:1; min-width:140px;" }, [
+                    el("div", { style: "font-size:0.8em; opacity:0.5; margin-bottom:4px;" }, "REBOUNDS PER GAME"),
+                    miniStatTable(recap.statsLeaders.rpg, "rpg")
+                ]),
+                el("div", { style: "flex:1; min-width:140px;" }, [
+                    el("div", { style: "font-size:0.8em; opacity:0.5; margin-bottom:4px;" }, "ASSISTS PER GAME"),
+                    miniStatTable(recap.statsLeaders.apg, "apg")
+                ])
+            ].filter(Boolean))
+        ]) : null,
+
+        el("div", { class: "sep" }),
+        el("div", { style: "display:flex; gap:8px;" }, [
+            el("button", {
+                class: "btn btnPrimary",
+                style: "flex:1;",
+                onclick: () => { close(); location.hash = "#/free-agency"; }
+            }, "Go to Free Agency"),
+            el("button", {
+                class: "btn",
+                onclick: close
+            }, "Close")
+        ])
+    ].filter(Boolean));
 
     overlay.appendChild(modal);
     document.body.appendChild(overlay);

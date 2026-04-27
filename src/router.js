@@ -11,6 +11,7 @@ import { TradeScreen } from "./ui/screens/trade.js";
 import { DepthChartScreen } from "./ui/screens/depthChart.js";
 import { RetiredScreen } from "./ui/screens/retired.js";
 import { MidseasonFAScreen } from "./ui/screens/midseasonFA.js";
+import { LeagueLeadersScreen } from "./ui/screens/leagueLeaders.js";
 
 export const router = {
   "/": () => HomeScreen(),
@@ -26,6 +27,7 @@ export const router = {
   "/depth-chart": () => DepthChartScreen(),
   "/retired": () => RetiredScreen(),
   "/available-players": () => MidseasonFAScreen(),
+  "/league-leaders": () => LeagueLeadersScreen(),
 };
 
 export function mountRouter(appEl, routesMap){

@@ -49,6 +49,7 @@ export function ensureAppState(loadedOrNull){
 
     STATE.game.tradeDemandChecked ??= false;
     STATE.game.midseasonFaPool ??= [];
+    STATE.game.lastSeasonRecap ??= null;
 
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0; t.losses ??= 0;
@@ -1673,14 +1674,36 @@ export function advanceToNextYear(){
   g.tradeDemandChecked = false;
   g.cpuSeasonTradeCount = 0;
   g.midseasonFaPool = [];
+  g.lastSeasonRecap = null;
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
   autoSave();
 }
 
+function computeStatsLeaders(g, topN = 5) {
+    const all = [];
+    for (const t of g.league.teams) {
+        for (const p of (t.roster || [])) {
+            const gp = p.stats?.gp || 0;
+            if (gp < 5) continue;
+            all.push({
+                name: p.name, team: t.name, pos: p.pos, gp,
+                ppg: Number((p.stats.pts / gp).toFixed(1)),
+                rpg: Number((p.stats.reb / gp).toFixed(1)),
+                apg: Number((p.stats.ast / gp).toFixed(1))
+            });
+        }
+    }
+    const top = (key) => [...all].sort((a, b) => b[key] - a[key]).slice(0, topN);
+    return { ppg: top('ppg'), rpg: top('rpg'), apg: top('apg') };
+}
+
 export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish }){
   const g = STATE.game;
-  
+
+  // Capture stats leaders before roster processing clears/resets anything
+  const statsLeaders = computeStatsLeaders(g);
+
   processEndSeasonRoster(g);
 
   g.history ??= [];
@@ -1732,8 +1755,20 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
     userPlayoffFinish: userFinish,
     championTeam: championTeam?.name || "—",
     awards,
-    allTeamRecords
+    allTeamRecords,
+    statsLeaders
   });
+
+  g.lastSeasonRecap = {
+    year: g.year,
+    champion: championTeam?.name || "—",
+    userRecord: `${userTeam.wins}-${userTeam.losses}`,
+    userFinish,
+    awards,
+    statsLeaders,
+    viewed: false
+  };
+
   g.inbox.unshift({ t: Date.now(), msg: `Season ${g.year} awards saved to History.` });
   autoSave();
 }
