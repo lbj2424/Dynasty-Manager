@@ -819,6 +819,25 @@ function showSeasonRecapModal(recap, onClose) {
         : recap.userFinish === "Finals" ? "var(--accent)"
         : "var(--text)";
 
+    const fmtDelta = (n) => n > 0 ? `+${n}` : String(n);
+    const deltaColor = (n) => n > 0 ? "var(--good)" : n < 0 ? "var(--bad)" : "var(--muted)";
+    const developmentRows = (recap.developmentReport || [])
+        .slice()
+        .sort((a, b) => b.ovrDelta - a.ovrDelta || b.newOvr - a.newOvr)
+        .map(p => el("tr", {}, [
+            el("td", { style:"font-weight:bold;" }, p.name),
+            el("td", {}, `${p.pos} ${p.newAge}`),
+            el("td", {}, p.potentialGrade || "-"),
+            el("td", {}, p.focus || "Balanced"),
+            el("td", {}, `${p.ovr} -> ${p.newOvr}`),
+            el("td", { style:`font-weight:bold; color:${deltaColor(p.ovrDelta)};` }, fmtDelta(p.ovrDelta)),
+            el("td", { style:`color:${deltaColor(p.offDelta)};` }, fmtDelta(p.offDelta)),
+            el("td", { style:`color:${deltaColor(p.defDelta)};` }, fmtDelta(p.defDelta)),
+            el("td", {}, `${p.minutes} min / ${p.ppg} ppg`),
+            el("td", {}, p.status),
+            el("td", { style:"font-size:0.82em; opacity:0.75;" }, (p.reasons || []).join(", "))
+        ]));
+
     const modal = el("div", { class: "card", style: "width:620px; max-width:92%; max-height:88vh; overflow-y:auto;" }, [
         el("div", { style: "text-align:center; padding-bottom:8px;" }, [
             el("div", { style: "font-size:1.7em; font-weight:bold; color:var(--good);" }, `${recap.year} Season Complete`),
@@ -857,6 +876,28 @@ function showSeasonRecapModal(recap, onClose) {
                     miniStatTable(recap.statsLeaders.apg, "apg")
                 ])
             ].filter(Boolean))
+        ]) : null,
+
+        developmentRows.length ? el("div", { class: "card", style: "padding:10px; margin-top:12px;" }, [
+            el("div", { class: "h2", style: "font-size:0.85em; opacity:0.6; margin-bottom:8px;" }, "PLAYER DEVELOPMENT"),
+            el("div", { style:"overflow-x:auto;" }, [
+                el("table", { class:"table" }, [
+                    el("thead", {}, el("tr", {}, [
+                        el("th", {}, "Player"),
+                        el("th", {}, "Age"),
+                        el("th", {}, "Pot"),
+                        el("th", {}, "Focus"),
+                        el("th", {}, "OVR"),
+                        el("th", {}, "+/-"),
+                        el("th", {}, "OFF"),
+                        el("th", {}, "DEF"),
+                        el("th", {}, "Role"),
+                        el("th", {}, "Status"),
+                        el("th", {}, "Why")
+                    ])),
+                    el("tbody", {}, developmentRows)
+                ])
+            ])
         ]) : null,
 
         el("div", { class: "sep" }),

@@ -1,5 +1,5 @@
 import { el, card, button, badge, interestBar, showPlayerModal } from "../components.js";
-import { getState, executeTrade, isTradeWindowOpen } from "../../state.js";
+import { getState, executeTrade, isTradeWindowOpen, tradePlayerValue, tradePickValue } from "../../state.js";
 import { clamp } from "../../utils.js";
 import { TRADE_DEADLINE_WEEK } from "../../data/constants.js";
 
@@ -29,38 +29,29 @@ export function TradeScreen(){
   const partner = g.league.teams.find(t => t.id === ts.partnerId);
 
   // --- Calculations ---
-  const getPlayerValue = (p) => {
-    let val = Math.pow((p.ovr - 50), 2.5) / 10;
-    const potBonus = { "A+": 1.5, "A": 1.3, "B": 1.15, "C": 1.0, "D": 0.9, "F": 0.8 };
-    val *= (potBonus[p.potentialGrade] || 1.0);
-    return Math.round(val);
-  };
-  const getPickValue = (pick) => {
-      // Devalue picks far in the future slightly
-      const yearsOut = pick.year - g.year;
-      let val = (pick.round === 1) ? 250 : 50;
-      if(yearsOut > 0) val *= (1 - (yearsOut * 0.1)); // -10% per year out
-      return Math.round(val);
-  };
+  const getPlayerValue = (p, receivingTeam, sendingTeam) =>
+    tradePlayerValue(p, { receivingTeam, sendingTeam, game: g });
+  const getPickValue = (pick, receivingTeam) =>
+    tradePickValue(pick, { receivingTeam, game: g });
 
-  const calcTotalValue = (items) => {
+  const calcTotalValue = (items, receivingTeam, sendingTeam) => {
     let sum = 0;
-    items.players.forEach(p => sum += getPlayerValue(p));
-    items.picks.forEach(p => sum += getPickValue(p));
+    items.players.forEach(p => sum += getPlayerValue(p, receivingTeam, sendingTeam));
+    items.picks.forEach(p => sum += getPickValue(p, receivingTeam));
     return sum;
   };
 
-  const userVal = calcTotalValue(ts.userOffer);
-  const partnerVal = calcTotalValue(ts.partnerOffer);
+  const userVal = calcTotalValue(ts.userOffer, partner, userTeam);
+  const partnerVal = calcTotalValue(ts.partnerOffer, partner, partner);
   const delta = userVal - partnerVal;
   
   // CPU Interest Logic
   // They want to WIN the trade (User gives more than they get)
-  // Base interest is 50. If User gives +100 value, interest goes up.
-  let interest = 50 + (delta / 5); 
+  // Base interest is 50. Bigger positive gaps mean the partner likes the deal more.
+  let interest = 50 + (delta / 70); 
   interest = clamp(interest, 0, 100);
 
-  const canSubmit = ts.userOffer.players.length > 0 || ts.partnerOffer.players.length > 0 || ts.userOffer.picks.length > 0;
+  const canSubmit = ts.userOffer.players.length > 0 || ts.partnerOffer.players.length > 0 || ts.userOffer.picks.length > 0 || ts.partnerOffer.picks.length > 0;
 
   const root = el("div", {}, []);
 
@@ -121,12 +112,12 @@ export function TradeScreen(){
           el("div", {}, [
               el("div", { class:"h2" }, `${userTeam.name} Sends:`),
               el("div", { style:"min-height:40px; border:1px dashed var(--line); border-radius:8px; padding:8px;" }, userItems),
-              el("div", { class:"p", style:"margin-top:4px;" }, `Total Value: ${userVal}`)
+              el("div", { class:"p", style:"margin-top:4px;" }, `Partner Value: ${userVal}`)
           ]),
           el("div", {}, [
               el("div", { class:"h2" }, `${partner.name} Sends:`),
               el("div", { style:"min-height:40px; border:1px dashed var(--line); border-radius:8px; padding:8px;" }, partnerItems),
-              el("div", { class:"p", style:"margin-top:4px;" }, `Total Value: ${partnerVal}`)
+              el("div", { class:"p", style:"margin-top:4px;" }, `Partner Value: ${partnerVal}`)
           ])
       ]),
       el("div", { class:"sep" }),
@@ -186,18 +177,24 @@ export function TradeScreen(){
           el("div", { class:"h2" }, "Players"),
           el("div", { style:"max-height:300px; overflow-y:auto;" }, 
             el("table", { class:"table" }, [
-              el("thead", {}, el("tr", {}, [el("th",{},"Name"), el("th",{},"Pos"), el("th",{},"OVR"), el("th",{},"Age"), el("th",{},"Action")])),
+              el("thead", {}, el("tr", {}, [el("th",{},"Name"), el("th",{},"Pos"), el("th",{},"OVR"), el("th",{},"Age"), el("th",{},"Contract"), el("th",{},"Happy"), el("th",{},"Value"), el("th",{},"Action")])),
               el("tbody", {}, roster.map(p => {
                   const nameSpan = el("span", {
                       style: "cursor:pointer; text-decoration:underline; color:var(--accent);",
                       onclick: () => showPlayerModal(p)
                   }, p.name);
+                  const assetValue = side === "user"
+                      ? getPlayerValue(p, partner, userTeam)
+                      : getPlayerValue(p, partner, partner);
 
                   return el("tr", {}, [
                       el("td", {}, nameSpan),
                       el("td", {}, p.pos),
                       el("td", {}, String(p.ovr)),
                       el("td", {}, String(p.age)),
+                      el("td", {}, p.contract ? `${p.contract.years}y / ${p.contract.salary}M` : "FA"),
+                      el("td", {}, String(p.happiness ?? 70)),
+                      el("td", {}, String(assetValue)),
                       el("td", {}, button("Add", { small:true, onClick:()=>{
                           if (side === 'user') ts.userOffer.players.push(p);
                           else ts.partnerOffer.players.push(p);
@@ -211,11 +208,12 @@ export function TradeScreen(){
           el("div", { class:"h2" }, "Draft Picks"),
            el("div", { style:"max-height:200px; overflow-y:auto;" }, 
             el("table", { class:"table" }, [
-              el("thead", {}, el("tr", {}, [el("th",{},"Year"), el("th",{},"Round"), el("th",{},"Original"), el("th",{},"Action")])),
+              el("thead", {}, el("tr", {}, [el("th",{},"Year"), el("th",{},"Round"), el("th",{},"Original"), el("th",{},"Value"), el("th",{},"Action")])),
               el("tbody", {}, picks.map(p => el("tr", {}, [
                   el("td", {}, String(p.year)),
                   el("td", {}, String(p.round)),
                   el("td", {}, g.league.teams.find(t=>t.id===p.originalOwnerId)?.name.split(" ").pop()),
+                  el("td", {}, String(getPickValue(p, partner))),
                   el("td", {}, button("Add", { small:true, onClick:()=>{
                       if (side === 'user') ts.userOffer.picks.push(p);
                       else ts.partnerOffer.picks.push(p);

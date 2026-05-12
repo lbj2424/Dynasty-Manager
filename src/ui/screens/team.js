@@ -1,5 +1,7 @@
 import { el, card, badge, button, showPlayerModal } from "../components.js";
-import { getState, releasePlayer, negotiateExtension } from "../../state.js";
+import { getState, releasePlayer, negotiateExtension, saveToSlot, getActiveSaveSlot } from "../../state.js";
+
+const DEV_FOCUS_OPTIONS = ["Balanced", "Offense", "Defense", "Shooting", "Playmaking", "Strength"];
 
 export function TeamScreen(){
   const s = getState();
@@ -64,6 +66,16 @@ export function TeamScreen(){
             onclick: () => showPlayerModal(p)
         }, p.name);
 
+        p.dev ??= { focus: "Balanced", points: 0 };
+        p.dev.focus ??= "Balanced";
+        const focusSelect = el("select", {
+            onchange: (e) => {
+                p.dev.focus = e.target.value;
+                saveToSlot(getActiveSaveSlot() || "A");
+                rerender(root);
+            }
+        }, DEV_FOCUS_OPTIONS.map(f => el("option", { value:f, selected:f === p.dev.focus }, f)));
+
         return el("tr", {}, [
             el("td", {}, nameLink),
             el("td", {}, p.pos),
@@ -71,6 +83,7 @@ export function TeamScreen(){
             el("td", { style:"color:var(--good)" }, String(p.off ?? p.ovr)), 
             el("td", { style:"color:var(--warn)" }, String(p.def ?? p.ovr)), 
             el("td", {}, p.potentialGrade),
+            el("td", {}, focusSelect),
             el("td", {}, String(p.age)),
             el("td", {}, String(p.happiness)),
             el("td", {}, `${p.contract.years}y / ${p.contract.salary}M`),
@@ -89,6 +102,7 @@ export function TeamScreen(){
         el("th", {}, "OFF"), 
         el("th", {}, "DEF"), 
         el("th", {}, "Pot"),
+        el("th", {}, "Focus"),
         el("th", {}, "Age"),
         el("th", {}, "Happy"),
         el("th", {}, "Contract"),
@@ -97,7 +111,7 @@ export function TeamScreen(){
         el("th", {}, "Actions")
       ])),
       el("tbody", {}, rows.length ? rows : [
-        el("tr", {}, [el("td", { colspan:"12" }, "No roster found.")])
+        el("tr", {}, [el("td", { colspan:"13" }, "No roster found.")])
       ])
     ])
   ]));

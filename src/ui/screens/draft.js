@@ -210,7 +210,7 @@ function makePick(d, teamId, prospect, g){
       rookieYear: g.year + 1, 
       // ---------------------------------------
       happiness: 70,
-      dev: { focus: "Overall", points: 7 },
+      dev: { focus: "Balanced", points: 7 },
       promisedRole: "Reserve",
       contract: { years: 2, salary: rookieSalary },
       stats: { gp:0, pts:0, reb:0, ast:0 },

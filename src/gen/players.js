@@ -6,8 +6,9 @@ const FIRST = [
   "Dillon","DeAndre","Aaron","Tyrese","Luke","Sam","Tim","Chris","James","Kevin",
   "Anthony","Brandon","Derrick","Kyle","Eric","Tyler","Andre","Javon","Tre","Zach",
   "Elijah","Xavier","Damian","Miles","Scottie","Cade","Paolo","Evan","Jaren","Jrue",
-  "Bam","Devin","Shai","Cole","Keegan","Jaden","Josh","Jamal","Victor","RJ",
-  "Cam","Grant","Patrick","Wendell","Precious","Alperen","Amen","Ausar","Scoot","Keyonte"
+  "Bam","Devin","Shai","Cole","Keegan","Jaden","Josh","Jamal","Victor","RJ","Rick",
+  "Brock","Dustin","Srig","Cameron","Kyle","Justin","Josiah","Jake","Nic","Trey","Zac",
+  "Cam","Grant","Patrick","Wendell","Precious","Alperen","Amen","Ausar","Scoot","Keyonte","Juko"
 ];
 const LAST = [
   "Cruz","Johnson","Smith","Brown","Williams","Jones","Garcia","Miller","Davis","Rodriguez",
@@ -16,7 +17,7 @@ const LAST = [
   "Young","King","Wright","Scott","Torres","Hill","Flores","Green","Adams","Nelson",
   "Baker","Mitchell","Roberts","Phillips","Evans","Turner","Parker","Collins","Stewart","Sanchez",
   "Morris","Rogers","Reed","Cook","Morgan","Bell","Murphy","Cooper","Richardson","Howard",
-  "Ward","Brooks","Jenkins","Gray","Price","Simmons","Foster","Hayes","Bryant","Washington"
+  "Ward","Brooks","Jenkins","Gray","Price","Simmons","Foster","Hayes","Bryant","Washington","Walker"
 ];
 const POS = ["PG","SG","SF","PF","C"];
 

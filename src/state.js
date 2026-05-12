@@ -8,7 +8,8 @@ import {
   SEASON_WEEKS,
   TRADE_DEADLINE_WEEK,
   PHASES,
-  SALARY_CAP
+  SALARY_CAP,
+  ROSTER_MAX
 } from "./data/constants.js";
 import { clamp, id, rng, seedFromString } from "./utils.js";
 
@@ -68,6 +69,8 @@ export function ensureAppState(loadedOrNull){
         p.awards ??= []; // FIX: Initialize awards array
         p.happiness ??= 70;
         p.age ??= 24; 
+        p.dev ??= { focus: "Balanced", points: 0 };
+        p.dev.focus ??= "Balanced";
         
         if (p.off === undefined) p.off = p.ovr;
         if (p.def === undefined) p.def = p.ovr;
@@ -281,18 +284,126 @@ export function advanceFaRound(){
   autoSave();
 }
 
-function buildTeamNeeds(cpuTeams) {
-    const teamNeeds = {};
-    for (const t of cpuTeams) {
-        const counts = { PG:0, SG:0, SF:0, PF:0, C:0 };
-        const bestAtPos = { PG:0, SG:0, SF:0, PF:0, C:0 };
-        for (const p of t.roster) {
-            counts[p.pos] = (counts[p.pos] || 0) + 1;
-            if (p.ovr > (bestAtPos[p.pos] || 0)) bestAtPos[p.pos] = p.ovr;
-        }
-        teamNeeds[t.id] = { counts, bestAtPos };
+const POSITIONS = ["PG","SG","SF","PF","C"];
+
+export function analyzeTeamNeeds(team, g = STATE.game) {
+    const roster = team?.roster || [];
+    const mode = getTeamMode(team, g);
+    const counts = Object.fromEntries(POSITIONS.map(pos => [pos, 0]));
+    const bestAtPos = Object.fromEntries(POSITIONS.map(pos => [pos, 0]));
+    const playableAtPos = Object.fromEntries(POSITIONS.map(pos => [pos, 0]));
+    let avgAge = 0;
+    let scoring = 0;
+    let defense = 0;
+
+    for (const p of roster) {
+        counts[p.pos] = (counts[p.pos] || 0) + 1;
+        if ((p.ovr || 0) >= 68) playableAtPos[p.pos] = (playableAtPos[p.pos] || 0) + 1;
+        if ((p.ovr || 0) > (bestAtPos[p.pos] || 0)) bestAtPos[p.pos] = p.ovr || 0;
+        avgAge += p.age || 24;
+        scoring += p.off ?? p.ovr ?? 0;
+        defense += p.def ?? p.ovr ?? 0;
     }
+
+    avgAge = roster.length ? avgAge / roster.length : 24;
+    const top8 = [...roster].sort((a, b) => (b.ovr || 0) - (a.ovr || 0)).slice(0, 8);
+    const starPower = top8[0]?.ovr || 0;
+    const capSpace = (team?.cap?.cap ?? SALARY_CAP) - (team?.cap?.payroll || 0);
+    const capStatus = capSpace >= 20 ? "flexible" : capSpace >= 8 ? "limited" : capSpace >= 0 ? "tight" : "over_cap";
+
+    const needs = POSITIONS.filter(pos => playableAtPos[pos] < 2 || bestAtPos[pos] < 72);
+    const surplus = POSITIONS.filter(pos => counts[pos] >= 4 || (counts[pos] >= 3 && bestAtPos[pos] >= 76));
+    const weaknesses = [];
+    if (starPower < 80) weaknesses.push("star_power");
+    if (roster.length < 12) weaknesses.push("depth");
+    if (scoring / Math.max(1, roster.length) < 70) weaknesses.push("scoring");
+    if (defense / Math.max(1, roster.length) < 70) weaknesses.push("defense");
+    if (avgAge > 30) weaknesses.push("age");
+    if (capStatus === "tight" || capStatus === "over_cap") weaknesses.push("cap");
+
+    const corePlayerIds = top8
+        .filter(p => p.ovr >= 84 || (p.ovr >= 78 && p.age <= 25) || (mode === "win_now" && p.ovr >= 80))
+        .map(p => p.id);
+
+    const tradeBlockIds = roster
+        .filter(p => !corePlayerIds.includes(p.id))
+        .filter(p =>
+            surplus.includes(p.pos) ||
+            (mode === "rebuilding" && p.age >= 29 && p.ovr >= 72) ||
+            ((p.happiness ?? 70) < 40 || p.tradeDemand) ||
+            ((p.contract?.salary || 0) > calculateSalary(p.ovr || 60, p.age || 24) * 1.35)
+        )
+        .map(p => p.id);
+
+    const targetTypes = mode === "rebuilding"
+        ? ["young_players", "first_round_picks", "cap_space"]
+        : mode === "win_now"
+        ? ["veterans", "star_power", "position_need"]
+        : ["prime_players", "position_need", "cap_value"];
+
+    return { mode, counts, playableAtPos, bestAtPos, needs, surplus, weaknesses, capSpace, capStatus, avgAge, corePlayerIds, tradeBlockIds, targetTypes };
+}
+
+function buildTeamNeeds(cpuTeams, g = STATE.game) {
+    const teamNeeds = {};
+    for (const t of cpuTeams) teamNeeds[t.id] = analyzeTeamNeeds(t, g);
     return teamNeeds;
+}
+
+export function scoreFreeAgentFit(player, team, g = STATE.game, analysis = null) {
+    if (!player || !team) return 0;
+    const a = analysis || analyzeTeamNeeds(team, g);
+    const age = player.age || 24;
+    let score = player.ovr || 0;
+
+    if (a.needs.includes(player.pos)) score += 18;
+    else if ((a.playableAtPos[player.pos] || 0) < 2) score += 10;
+    else if ((a.counts[player.pos] || 0) >= 4 && player.ovr < (a.bestAtPos[player.pos] || 0) + 4) score -= 35;
+    else if ((a.counts[player.pos] || 0) >= 3) score -= 15;
+
+    if (player.ovr > (a.bestAtPos[player.pos] || 0) + 5) score += 14;
+    if (a.weaknesses.includes("star_power") && player.ovr >= 82) score += 20;
+    if (a.weaknesses.includes("depth") && player.ovr >= 68 && player.ovr <= 76) score += 10;
+    if (a.weaknesses.includes("scoring") && (player.off ?? player.ovr) >= (player.def ?? player.ovr) + 4) score += 8;
+    if (a.weaknesses.includes("defense") && (player.def ?? player.ovr) >= (player.off ?? player.ovr) + 4) score += 8;
+
+    if (a.mode === "rebuilding") {
+        if (age <= 24) score += 16;
+        else if (age >= 30) score -= 28;
+        if ((player.ask || 0) > 12 && player.ovr < 82) score -= 16;
+    } else if (a.mode === "win_now") {
+        if (player.ovr >= 76 && age >= 27 && age <= 34) score += 14;
+        if (age <= 22 && player.ovr < 74) score -= 12;
+    } else {
+        if (age >= 24 && age <= 29) score += 8;
+        if (age >= 33) score -= 10;
+    }
+
+    const ask = player.ask || player.contract?.salary || 0;
+    const fair = Math.max(1, calculateSalary(player.ovr || 60, age));
+    const priceRatio = ask / fair;
+    if (priceRatio <= 0.75) score += 12;
+    else if (priceRatio >= 1.35) score -= 18;
+    if (a.capStatus === "tight" && ask > 8) score -= 22;
+    if (a.capStatus === "over_cap" && ask > 3) score -= 40;
+
+    return Math.round(score);
+}
+
+export function scoreFreeAgentOffer(player, offer, team, g = STATE.game) {
+    if (!player || !offer || !team) return 0;
+    const moneyScore = (offer.salary || 0) * (1 + 0.10 * (offer.years || 1));
+    const fit = scoreFreeAgentFit(player, team, g);
+    const age = player.age || 24;
+    const mode = getTeamMode(team, g);
+    let score = moneyScore * 10 + fit;
+
+    if (mode === "win_now" && age >= 29 && team.rating >= 78) score += 22;
+    if (mode === "rebuilding" && age <= 24) score += 16;
+    if (player.formerTeamId === team.id && (player.happiness ?? 70) >= 60) score += 18;
+    if (offer.isBirdRights) score += 8;
+
+    return score;
 }
 
 function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
@@ -303,7 +414,8 @@ function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
         const formerTeam = cpuTeams.find(t => t.id === p.formerTeamId);
         if (formerTeam && formerTeam.roster.length < 15) {
             const birdSpace = (SALARY_CAP + 20) - formerTeam.cap.payroll;
-            let wantsToKeep = p.ovr >= 74 || (p.age <= 25 && ["A+", "A"].includes(p.potentialGrade));
+            const formerAnalysis = teamNeeds[formerTeam.id] || analyzeTeamNeeds(formerTeam, g);
+            let wantsToKeep = scoreFreeAgentFit(p, formerTeam, g, formerAnalysis) >= 72 || p.ovr >= 78;
             if (wantsToKeep) {
                 const betterAtPos = formerTeam.roster
                     .filter(r => r.pos === p.pos && r.ovr >= p.ovr + 6 && r.contract?.years >= 1)
@@ -339,19 +451,23 @@ function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
     if (Math.random() > demandChance) return;
 
     const numOffers = Math.floor(Math.random() * 3) + 1;
-    const shuffled = [...cpuTeams].sort(() => 0.5 - Math.random());
+    const candidates = cpuTeams
+        .map(t => ({ team: t, analysis: teamNeeds[t.id], fit: scoreFreeAgentFit(p, t, g, teamNeeds[t.id]) }))
+        .filter(x => x.team.roster.length < 15)
+        .filter(x => x.fit >= 55)
+        .sort((a, b) => b.fit - a.fit + (Math.random() - 0.5) * 8);
 
-    for (const t of shuffled) {
+    for (const { team: t, analysis: needs, fit } of candidates) {
         if (p.offers.length >= numOffers) break;
-        const needs = teamNeeds[t.id];
         const posCount = needs.counts[p.pos] || 0;
         const currentStarterOvr = needs.bestAtPos[p.pos] || 0;
         if (posCount >= 4) continue;
-        if (posCount >= 2 && p.ovr < currentStarterOvr && Math.random() > 0.3) continue;
+        if (posCount >= 2 && p.ovr < currentStarterOvr && fit < 85) continue;
 
         let interestBoost = 1.0;
-        if (posCount <= 1) interestBoost = 1.5;
+        if (needs.needs.includes(p.pos)) interestBoost = 1.5;
         if (p.ovr > 80 && p.ovr > currentStarterOvr + 3) interestBoost = 2.0;
+        if (fit >= 100) interestBoost += 0.25;
 
         const capSpace = t.cap.cap - t.cap.payroll;
         let salaryMult;
@@ -384,12 +500,16 @@ function runFaCounterOffers(g) {
     for (const p of fa.pool) {
         if (!p.offers || p.offers.length < 2) continue;
 
-        p.offers.sort((a, b) => (b.salary * (1 + 0.1 * b.years)) - (a.salary * (1 + 0.1 * a.years)));
-        const bestScore = p.offers[0].salary * (1 + 0.1 * p.offers[0].years);
+        p.offers.sort((a, b) => {
+            const teamA = cpuTeams.find(t => t.id === a.teamId);
+            const teamB = cpuTeams.find(t => t.id === b.teamId);
+            return scoreFreeAgentOffer(p, b, teamB, g) - scoreFreeAgentOffer(p, a, teamA, g);
+        });
+        const bestScore = scoreFreeAgentOffer(p, p.offers[0], cpuTeams.find(t => t.id === p.offers[0].teamId), g);
 
         for (let i = 1; i < p.offers.length; i++) {
             const offer = p.offers[i];
-            const score = offer.salary * (1 + 0.1 * offer.years);
+            const score = scoreFreeAgentOffer(p, offer, cpuTeams.find(t => t.id === offer.teamId), g);
             const gap = (bestScore - score) / bestScore;
 
             // If within 20% of the best offer, 50% chance to bump up and compete
@@ -405,26 +525,33 @@ function runFaCounterOffers(g) {
         }
 
         // Re-sort after counter-offers
-        p.offers.sort((a, b) => (b.salary * (1 + 0.1 * b.years)) - (a.salary * (1 + 0.1 * a.years)));
+        p.offers.sort((a, b) => {
+            const teamA = cpuTeams.find(t => t.id === a.teamId);
+            const teamB = cpuTeams.find(t => t.id === b.teamId);
+            return scoreFreeAgentOffer(p, b, teamB, g) - scoreFreeAgentOffer(p, a, teamA, g);
+        });
     }
 }
 
 export function calculateSignChance(player, offerSalary, offerYears){
+    const g = STATE.game;
+    const userTeam = g.league.teams[g.userTeamIndex];
     const userScore = offerSalary * (1 + 0.1 * offerYears);
     const askScore = player.ask * (1 + 0.1 * player.yearsAsk);
-
+    const userOffer = { salary: offerSalary, years: offerYears, teamId: userTeam?.id };
     let bestCpuScore = 0;
     for (const off of (player.offers || [])) {
-        const s = off.salary * (1 + 0.1 * off.years);
+        const team = g.league.teams.find(t => t.id === off.teamId);
+        const s = scoreFreeAgentOffer(player, off, team, g);
         if (s > bestCpuScore) bestCpuScore = s;
     }
 
     // No competing offers = player is desperate, will accept 15% below their ask
     const noCompetition = bestCpuScore === 0;
-    const target = noCompetition ? askScore * 0.85 : Math.max(askScore, bestCpuScore);
+    const target = noCompetition ? askScore * 8.5 : Math.max(askScore * 10, bestCpuScore);
     if (target === 0) return 100;
 
-    const ratio = userScore / target;
+    const ratio = scoreFreeAgentOffer(player, userOffer, userTeam, g) / target;
     let chance = (ratio - 0.85) / (1.15 - 0.85) * 100;
 
     return clamp(Math.round(chance), 0, 100);
@@ -584,13 +711,13 @@ function deriveExpectation(team) {
     const r = team?.rating ?? 70;
     const owner = ownerConfig(team);
     let base;
-    if (r >= 85) base = { type: "title",     winTarget: 50, description: "Win the championship" };
-    else if (r >= 78) base = { type: "contender", winTarget: 45, description: "Reach the conference finals" };
-    else if (r >= 70) base = { type: "playoffs",  winTarget: 38, description: "Make the playoffs" };
-    else base = { type: "rebuild", winTarget: 25, description: "Show improvement and develop young talent" };
+    if (r >= 85) base = { type: "title",     winTarget: 34, description: "Win the championship" };
+    else if (r >= 78) base = { type: "contender", winTarget: 30, description: "Reach the conference finals" };
+    else if (r >= 70) base = { type: "playoffs",  winTarget: 22, description: "Make the playoffs" };
+    else base = { type: "rebuild", winTarget: 14, description: "Show improvement and develop young talent" };
 
     // Apply archetype modifier to win target
-    base.winTarget = Math.max(10, base.winTarget + (owner.winTargetDelta || 0));
+    base.winTarget = clamp(base.winTarget + (owner.winTargetDelta || 0), 8, 38);
 
     // Sharpen description for distinctive archetypes
     if (owner.key === "win_now_zealot" && base.type !== "title") {
@@ -605,6 +732,94 @@ function deriveExpectation(team) {
 }
 
 // Initial salary tier — scales with how demanding the role is. Owner archetype adjusts up/down.
+function expectationLevelFromRating(r) {
+    if (r >= 85) return 3;
+    if (r >= 78) return 2;
+    if (r >= 70) return 1;
+    return 0;
+}
+
+function expectationFromLevel(level) {
+    if (level >= 3) return { type: "title", winTarget: 34, description: "Win the championship" };
+    if (level === 2) return { type: "contender", winTarget: 30, description: "Reach the conference finals" };
+    if (level === 1) return { type: "playoffs", winTarget: 22, description: "Make the playoffs" };
+    return { type: "rebuild", winTarget: 14, description: "Show improvement and develop young talent" };
+}
+
+function playoffFinishLevel(finish) {
+    if (finish === "Champion") return 4;
+    if (finish === "Finals") return 3;
+    if (finish === "Conf. Finals") return 2;
+    if (finish === "Semis") return 1.5;
+    if (finish === "Round 1") return 1;
+    return 0;
+}
+
+function latestReviewForExpectation(g) {
+    const history = g?.gm?.reviewHistory || [];
+    return history.length ? history[history.length - 1] : null;
+}
+
+function deriveAdjustedExpectation(team, g = null) {
+    const r = team?.rating ?? 70;
+    const owner = ownerConfig(team);
+    let level = expectationLevelFromRating(r);
+    let contextNote = "";
+
+    const review = latestReviewForExpectation(g);
+    const approval = g?.gm?.ownerApproval ?? 70;
+    const isRecentReview = review && (!g?.year || review.year >= g.year - 1);
+    if (isRecentReview) {
+        const finishLevel = playoffFinishLevel(review.playoffFinish);
+
+        if (finishLevel === 0) {
+            const cap = owner.key === "win_now_zealot" && r >= 82 ? 2 : 1;
+            if (level > cap) {
+                level = cap;
+                contextNote = owner.key === "win_now_zealot"
+                    ? " after last season's miss"
+                    : " after missing the playoffs last season";
+            }
+        } else if (finishLevel <= 1 && level >= 3) {
+            level = 2;
+            contextNote = " after an early playoff exit";
+        } else if (finishLevel === 1.5 && level >= 3 && owner.key !== "win_now_zealot" && approval < 80) {
+            level = 2;
+            contextNote = " after last season's playoff loss";
+        }
+
+        if (approval < 35 && level >= 2) {
+            level = 1;
+            contextNote = " while you rebuild owner trust";
+        } else if (approval < 55 && level >= 3) {
+            level = 2;
+            contextNote = " while you prove last year was behind you";
+        }
+
+        if (owner.key === "patient_rebuilder" && ["missed", "failed"].includes(review.verdict) && level > 1) {
+            level -= 1;
+            contextNote = " with a steadier, patient approach";
+        }
+    }
+
+    const base = expectationFromLevel(level);
+    base.winTarget = clamp(base.winTarget + (owner.winTargetDelta || 0), 8, 38);
+
+    if (owner.key === "win_now_zealot" && base.type !== "title") {
+        base.description = base.type === "contender" ? "Reach the conference finals" : "Make the playoffs";
+        base.description += " (owner still wants urgency)";
+    } else if (owner.key === "patient_rebuilder" && base.type !== "rebuild") {
+        base.description = base.description + " (owner is patient - sustainable growth matters)";
+    } else if (owner.key === "cheap") {
+        base.description = base.description + " (owner watches the payroll closely)";
+    }
+
+    if (contextNote) base.description += contextNote;
+    base.ratingLevel = expectationLevelFromRating(r);
+    base.adjustedLevel = level;
+    return base;
+}
+
 function computeInitialSalary(expectation, team) {
     let base;
     switch (expectation?.type) {
@@ -620,7 +835,7 @@ function computeInitialSalary(expectation, team) {
 
 // Build the GM object for a brand-new save. Called once from newGameState.
 function buildInitialGm(userTeam, year) {
-    const expectation = deriveExpectation(userTeam);
+    const expectation = deriveAdjustedExpectation(userTeam);
     const salary = computeInitialSalary(expectation, userTeam);
     const owner = ownerConfig(userTeam);
     const contractYears = Math.max(2, 3 + (owner.contractYearsDelta || 0));
@@ -850,18 +1065,48 @@ function conductAnnualReview(g, userFinish) {
         if (madePlayoffs) stint.playoffsWithTeam = (stint.playoffsWithTeam || 0) + 1;
     }
 
-    // Determine verdict
+    // Determine verdict. Playoff-round goals are judged by playoff finish first,
+    // with wins still acting as context for "close" and "exceeded" seasons.
     let verdict, approvalDelta;
-    if (isChamp) { verdict = "exceeded_title"; approvalDelta = 40; }
-    else if (expectationType === "title" && !isFinals) { verdict = "missed"; approvalDelta = -25; }
-    else if (winDelta >= 10 || (expectationType === "rebuild" && madePlayoffs)) { verdict = "exceeded"; approvalDelta = 25; }
-    else if (winDelta >= 0 || (expectationType === "rebuild" && wins >= winTarget - 3)) { verdict = "met"; approvalDelta = 10; }
-    else if (winDelta >= -5) { verdict = "close"; approvalDelta = -5; }
-    else if (winDelta >= -10) { verdict = "missed"; approvalDelta = -25; }
-    else { verdict = "failed"; approvalDelta = -45; }
-
-    // Rebuilds get a bonus for making the playoffs even if win target wasn't a primary measure
-    if (expectationType === "rebuild" && madePlayoffs && verdict !== "exceeded_title") approvalDelta += 10;
+    const finishLevel = playoffFinishLevel(userFinish);
+    if (isChamp) {
+        verdict = "exceeded_title"; approvalDelta = 40;
+    } else if (expectationType === "title") {
+        if (isFinals) { verdict = "close"; approvalDelta = -5; }
+        else if (finishLevel >= 2) { verdict = "missed"; approvalDelta = -15; }
+        else if (madePlayoffs) { verdict = "missed"; approvalDelta = -25; }
+        else { verdict = "failed"; approvalDelta = -45; }
+    } else if (expectationType === "contender") {
+        if (finishLevel >= 2) {
+            verdict = winDelta >= 5 ? "exceeded" : "met";
+            approvalDelta = winDelta >= 5 ? 25 : 10;
+        } else if (madePlayoffs) {
+            verdict = "close"; approvalDelta = -8;
+        } else {
+            verdict = winDelta >= -5 ? "missed" : "failed";
+            approvalDelta = winDelta >= -5 ? -25 : -45;
+        }
+    } else if (expectationType === "playoffs") {
+        if (madePlayoffs) {
+            verdict = winDelta >= 8 || finishLevel >= 2 ? "exceeded" : "met";
+            approvalDelta = verdict === "exceeded" ? 25 : 10;
+        } else if (winDelta >= -5) {
+            verdict = "close"; approvalDelta = -5;
+        } else if (winDelta >= -10) {
+            verdict = "missed"; approvalDelta = -25;
+        } else {
+            verdict = "failed"; approvalDelta = -45;
+        }
+    } else if (expectationType === "rebuild") {
+        if (madePlayoffs) { verdict = "exceeded"; approvalDelta = 35; }
+        else if (wins >= winTarget - 3) { verdict = "met"; approvalDelta = 10; }
+        else if (winDelta >= -8) { verdict = "close"; approvalDelta = -5; }
+        else { verdict = "missed"; approvalDelta = -20; }
+    } else if (winDelta >= 0) {
+        verdict = "met"; approvalDelta = 10;
+    } else {
+        verdict = "missed"; approvalDelta = -20;
+    }
 
     gm.ownerApproval = clamp(gm.ownerApproval + approvalDelta, 0, 100);
     gm.contract.years -= 1;
@@ -1301,7 +1546,7 @@ export function acceptPoachingOffer(offerId) {
     };
     gm.status = "active";
     gm.ownerApproval = 70;
-    gm.expectation = deriveExpectation(newTeam);
+    gm.expectation = deriveAdjustedExpectation(newTeam);
     gm.activeMandate = null; // mandate was issued by old owner — drop it
 
     // Clear team-specific session state — these all belong to the old team
@@ -1365,11 +1610,33 @@ export function declineAllPoachingOffers() {
 function processEndSeasonRoster(g){
   const userTeamId = g.league.teams[g.userTeamIndex].id;
   g.offseason.expiring = []; 
+  const userDevelopmentReport = [];
 
   for(const t of g.league.teams){
     const nextRoster = [];
     
     for(const p of t.roster){
+      const wasUserPlayer = t.id === userTeamId;
+      const beforeDev = wasUserPlayer ? {
+          name: p.name,
+          pos: p.pos,
+          age: p.age || 20,
+          ovr: p.ovr,
+          off: p.off ?? p.ovr,
+          def: p.def ?? p.ovr,
+          potentialGrade: p.potentialGrade,
+          focus: p.dev?.focus || "Balanced",
+          minutes: p.rotation?.minutes || 0,
+          gp: p.stats?.gp || 0,
+          ppg: p.stats?.gp ? Number((p.stats.pts / p.stats.gp).toFixed(1)) : 0
+      } : null;
+      const devReasons = [];
+
+      p.off ??= p.ovr;
+      p.def ??= p.ovr;
+      p.dev ??= { focus: "Balanced", points: 0 };
+      p.dev.focus ??= "Balanced";
+
       p.careerStats ??= [];
       p.careerStats.push({
           year: g.year,
@@ -1383,33 +1650,40 @@ function processEndSeasonRoster(g){
 
       const age = p.age || 20;
       const minutes = p.rotation?.minutes || 0; 
+      const focus = p.dev.focus || "Balanced";
       
-      let growthSpeed = 0;
+      let baseGrowth = 0;
 
       // 1. Age
-      if (age <= 22) growthSpeed += 2;       
-      else if (age <= 25) growthSpeed += 1;  
-      else if (age <= 29) growthSpeed += 0;  
-      else if (age <= 32) growthSpeed -= 1; 
-      else growthSpeed -= 3;                
+      if (age <= 22) { baseGrowth += 2; devReasons.push("young core age"); }
+      else if (age <= 25) { baseGrowth += 1; devReasons.push("still developing"); }
+      else if (age <= 29) { baseGrowth += 0; devReasons.push("prime age"); }
+      else if (age <= 32) { baseGrowth -= 1; devReasons.push("early decline age"); }
+      else { baseGrowth -= 3; devReasons.push("late-career decline"); }
 
       // 2. Potential
-      if (p.potentialGrade === "A+") growthSpeed += 2;      
-      else if (p.potentialGrade === "A") growthSpeed += 1; 
-      else if (p.potentialGrade === "B") { if (Math.random() > 0.5) growthSpeed += 1; }
-      else if (p.potentialGrade === "F") growthSpeed -= 1; 
+      if (p.potentialGrade === "A+") { baseGrowth += 2; devReasons.push("A+ potential"); }
+      else if (p.potentialGrade === "A") { baseGrowth += 1; devReasons.push("A potential"); }
+      else if (p.potentialGrade === "B") {
+          if (Math.random() > 0.5) { baseGrowth += 1; devReasons.push("B potential bump"); }
+          else devReasons.push("B potential held steady");
+      }
+      else if (p.potentialGrade === "F") { baseGrowth -= 1; devReasons.push("F potential drag"); }
+      else devReasons.push(`${p.potentialGrade || "C"} potential`);
 
       // 3. Playtime
       if (age < 28) {
-          if (minutes >= 28) growthSpeed += 2;        
-          else if (minutes >= 15) growthSpeed += 1;   
-          else if (minutes < 5) growthSpeed -= 1;     
+          if (minutes >= 28) { baseGrowth += 2; devReasons.push("starter minutes"); }
+          else if (minutes >= 15) { baseGrowth += 1; devReasons.push("rotation minutes"); }
+          else if (minutes < 5) { baseGrowth -= 1; devReasons.push("buried on bench"); }
+          else devReasons.push("limited role");
       }
 
       // 4. Performance
       const ppg = p.stats.gp > 0 ? (p.stats.pts / p.stats.gp) : 0;
       if (age < 26 && ppg >= 15) {
-          growthSpeed += 1; 
+          baseGrowth += 1; 
+          devReasons.push("strong scoring year");
           if (t.id === userTeamId && Math.random() < 0.3) {
              g.inbox.unshift({ t:Date.now(), msg:`DEVELOPMENT: ${p.name} improved from strong performance!` });
           }
@@ -1419,21 +1693,42 @@ function processEndSeasonRoster(g){
       const caps = { "A+":99, "A":92, "B":84, "C":77, "D":70, "F":60 };
       const softCap = caps[p.potentialGrade] || 75;
       if (p.ovr >= softCap) {
-          if (growthSpeed > 0) growthSpeed = 0; 
-          else growthSpeed -= 1; 
+          if (baseGrowth > 0) baseGrowth = 0; 
+          else baseGrowth -= 1; 
+          devReasons.push(`near ${p.potentialGrade} soft cap (${softCap})`);
       }
 
       // 6. Variance
       const roll = Math.random();
       if (roll < 0.05) {
-          growthSpeed += 3; 
-          if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`BREAKOUT: ${p.name} had a massive offseason (+${growthSpeed})!` });
+          baseGrowth += 3; 
+          devReasons.push("breakout offseason");
+          if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`BREAKOUT: ${p.name} had a massive offseason (+${baseGrowth})!` });
       } else if (roll < 0.10) {
-          growthSpeed -= 2;
+          baseGrowth -= 2;
+          devReasons.push("rough offseason");
       }
 
-      const offChange = growthSpeed + (Math.floor(Math.random() * 3) - 1); 
-      const defChange = growthSpeed + (Math.floor(Math.random() * 3) - 1);
+      let offChange = baseGrowth + (Math.floor(Math.random() * 3) - 1); 
+      let defChange = baseGrowth + (Math.floor(Math.random() * 3) - 1);
+
+      if (focus === "Offense") {
+          offChange += 1;
+          devReasons.push("offense focus");
+      } else if (focus === "Defense") {
+          defChange += 1;
+          devReasons.push("defense focus");
+      } else if (focus === "Shooting" || focus === "Playmaking") {
+          offChange += focus === "Shooting" ? 2 : 1;
+          if (focus === "Shooting") defChange -= 1;
+          devReasons.push(`${focus.toLowerCase()} focus`);
+      } else if (focus === "Strength") {
+          defChange += 1;
+          if (age <= 25) offChange += 1;
+          devReasons.push("strength focus");
+      } else {
+          devReasons.push("balanced focus");
+      }
 
       p.off = clamp(p.off + offChange, 40, 99);
       p.def = clamp(p.def + defChange, 40, 99);
@@ -1449,11 +1744,41 @@ function processEndSeasonRoster(g){
 
       if (Math.random() < retireChance) {
           g.retiredPlayers.push({ ...p, retiredYear: g.year, finalTeam: t.name });
+          if (wasUserPlayer && beforeDev) {
+              userDevelopmentReport.push({
+                  ...beforeDev,
+                  newAge: p.age,
+                  newOvr: p.ovr,
+                  newOff: p.off,
+                  newDef: p.def,
+                  ovrDelta: p.ovr - beforeDev.ovr,
+                  offDelta: p.off - beforeDev.off,
+                  defDelta: p.def - beforeDev.def,
+                  status: "Retired",
+                  reasons: devReasons.slice(0, 5)
+              });
+          }
           if(t.id === userTeamId) g.inbox.unshift({ t:Date.now(), msg:`${p.name} has retired at age ${p.age}.` });
           continue; 
       }
 
       p.contract.years -= 1;
+      const devStatus = p.contract.years > 0 ? "Returning" : "Expired";
+
+      if (wasUserPlayer && beforeDev) {
+          userDevelopmentReport.push({
+              ...beforeDev,
+              newAge: p.age,
+              newOvr: p.ovr,
+              newOff: p.off,
+              newDef: p.def,
+              ovrDelta: p.ovr - beforeDev.ovr,
+              offDelta: p.off - beforeDev.off,
+              defDelta: p.def - beforeDev.def,
+              status: devStatus,
+              reasons: devReasons.slice(0, 5)
+          });
+      }
 
       if(p.contract.years > 0){
         nextRoster.push(p);
@@ -1487,6 +1812,7 @@ function processEndSeasonRoster(g){
 
   // CPU teams cut dead weight after processing rosters
   simCpuRosterCuts(g);
+  g.lastDevelopmentReport = userDevelopmentReport;
   g.tradeDemandChecked = false;
 }
 
@@ -1557,43 +1883,201 @@ function getTeamMode(team, g) {
     return "rebuilding";
 }
 
-function cpuPlayerValue(p) {
-    if (!p || p.ovr == null) return 0;
-    let val = Math.pow(Math.max(0, p.ovr - 50), 2.2);
-    const potMult = { "A+":1.6, "A":1.35, "B":1.15, "C":1.0, "D":0.85, "F":0.70 };
-    val *= (potMult[p.potentialGrade] || 1.0);
-    if (p.age <= 23) val *= 1.20;
-    else if (p.age >= 32) val *= 0.80;
-    else if (p.age >= 29) val *= 0.90;
-    return Math.round(val);
+function findPlayerTeam(g, playerId) {
+    return g?.league?.teams?.find(t => (t.roster || []).some(p => p.id === playerId)) || null;
 }
 
-// Value of player p to a specific team — adjusted for positional fit.
-// A scorer to a team that needs scoring is worth more than the same player to a stacked team.
-// When `team` is null/undefined, falls back to base cpuPlayerValue (no fit context).
-function cpuPlayerValueFor(p, team) {
-    const baseVal = cpuPlayerValue(p);
-    if (!p || !team) return baseVal;
+function playerContractMultiplier(p) {
+    const salary = p.contract?.salary || 0;
+    const years = p.contract?.years || 0;
+    if (!salary || !years) return 0.82;
+
+    const fairSalary = Math.max(1, calculateSalary(p.ovr || 60, p.age || 24));
+    const ratio = salary / fairSalary;
+    let mult = 1.0;
+
+    if (ratio <= 0.45) mult += 0.24;
+    else if (ratio <= 0.70) mult += 0.14;
+    else if (ratio <= 0.95) mult += 0.05;
+    else if (ratio >= 1.65) mult -= 0.30;
+    else if (ratio >= 1.35) mult -= 0.18;
+    else if (ratio >= 1.15) mult -= 0.08;
+
+    if (years >= 3) mult += ratio <= 1.0 ? 0.10 : -0.10;
+    else if (years === 1) mult += ratio <= 0.8 ? 0.02 : -0.08;
+
+    return clamp(mult, 0.55, 1.30);
+}
+
+function playerAgeMultiplier(p, receivingTeam, g) {
+    const age = p.age || 24;
+    const mode = receivingTeam ? getTeamMode(receivingTeam, g || STATE.game) : "retooling";
+    let mult;
+
+    if (age <= 21) mult = 1.28;
+    else if (age <= 24) mult = 1.18;
+    else if (age <= 28) mult = 1.06;
+    else if (age <= 31) mult = 0.94;
+    else if (age <= 34) mult = 0.76;
+    else mult = 0.55;
+
+    if (mode === "win_now") {
+        if (age >= 27 && age <= 32) mult += 0.08;
+        if (age <= 22) mult -= 0.08;
+    } else if (mode === "rebuilding") {
+        if (age <= 24) mult += 0.14;
+        if (age >= 29) mult -= 0.18;
+    }
+
+    return clamp(mult, 0.45, 1.45);
+}
+
+function playerLeverageMultiplier(p, sendingTeam, receivingTeam) {
+    const happy = p.happiness ?? 70;
+    let mult = 1.0;
+
+    if (p.tradeDemand) mult -= 0.24;
+    else if (happy < 25) mult -= 0.20;
+    else if (happy < 40) mult -= 0.12;
+    else if (happy >= 90) mult += 0.08;
+    else if (happy >= 80) mult += 0.04;
+
+    if (sendingTeam && receivingTeam && sendingTeam.id === receivingTeam.id && happy >= 80) {
+        mult += 0.06;
+    }
+
+    return clamp(mult, 0.65, 1.16);
+}
+
+function playerFitMultiplier(p, team) {
+    if (!p || !team) return 1.0;
     const sameSpot = team.roster.filter(r => r.pos === p.pos && r.id !== p.id);
     const countAtPos = sameSpot.length;
     const bestAtPos = sameSpot.reduce((max, r) => Math.max(max, r.ovr || 0), 0);
 
     let fitMult = 1.0;
-    if (countAtPos === 0) fitMult = 1.30;                                // huge need
-    else if (countAtPos === 1 && bestAtPos < p.ovr - 4) fitMult = 1.20;  // clear upgrade
-    else if (countAtPos === 1) fitMult = 1.05;                           // depth, slight bonus
-    else if (countAtPos === 2 && bestAtPos < p.ovr - 4) fitMult = 1.10;  // upgrade over starter
-    else if (countAtPos === 2) fitMult = 0.95;                           // ok depth
-    else if (countAtPos >= 3 && p.ovr > bestAtPos + 2) fitMult = 0.90;   // would supplant but stacked
-    else if (countAtPos >= 3) fitMult = 0.65;                            // already stacked
+    if (countAtPos === 0) fitMult = 1.30;
+    else if (countAtPos === 1 && bestAtPos < p.ovr - 4) fitMult = 1.20;
+    else if (countAtPos === 1) fitMult = 1.05;
+    else if (countAtPos === 2 && bestAtPos < p.ovr - 4) fitMult = 1.10;
+    else if (countAtPos === 2) fitMult = 0.95;
+    else if (countAtPos >= 3 && p.ovr > bestAtPos + 2) fitMult = 0.90;
+    else if (countAtPos >= 3) fitMult = 0.65;
 
-    return Math.round(baseVal * fitMult);
+    return fitMult;
 }
 
-function cpuPickValue(pick, currentYear) {
-    const yearsOut = Math.max(0, pick.year - currentYear);
-    const base = pick.round === 1 ? 300 : 80;
-    return Math.round(base * Math.pow(0.85, yearsOut));
+export function tradePlayerValue(p, { receivingTeam = null, sendingTeam = null, game = null } = {}) {
+    if (!p || p.ovr == null) return 0;
+    const g = game || STATE.game;
+    const holder = sendingTeam || findPlayerTeam(g, p.id);
+    const ovr = Math.max(0, p.ovr - 50);
+    let val = Math.pow(ovr, 2.15);
+
+    if (p.ovr >= 92) val *= 1.55;
+    else if (p.ovr >= 88) val *= 1.34;
+    else if (p.ovr >= 84) val *= 1.18;
+
+    val *= playerAgeMultiplier(p, receivingTeam, g);
+    val *= playerContractMultiplier(p);
+    val *= playerLeverageMultiplier(p, holder, receivingTeam);
+    val *= playerFitMultiplier(p, receivingTeam);
+
+    return Math.max(0, Math.round(val));
+}
+
+function projectedPickOriginalTeam(pick, g) {
+    return g?.league?.teams?.find(t => t.id === pick.originalOwnerId) || null;
+}
+
+function projectedPickStrength(pick, g) {
+    const original = projectedPickOriginalTeam(pick, g);
+    if (!original) return 0.50;
+
+    const games = (original.wins || 0) + (original.losses || 0);
+    if (games >= 6) return (original.wins || 0) / games;
+    return clamp(((original.rating || 72) - 55) / 35, 0.05, 0.95);
+}
+
+function expectedRookieOvrForPick(pick, strength) {
+    if (pick.round === 1) {
+        if (strength <= 0.18) return 81; // likely #1-2
+        if (strength <= 0.30) return 79; // high lottery
+        if (strength <= 0.42) return 77; // lottery
+        if (strength <= 0.55) return 75; // mid-first
+        if (strength <= 0.70) return 72; // playoff first
+        return 70;                       // contender first
+    }
+
+    if (strength <= 0.30) return 68;
+    if (strength <= 0.55) return 66;
+    return 64;
+}
+
+function pickUncertaintyMultiplier(pick, strength) {
+    if (pick.round === 1) {
+        if (strength <= 0.18) return 0.92;
+        if (strength <= 0.30) return 0.86;
+        if (strength <= 0.42) return 0.78;
+        if (strength <= 0.55) return 0.68;
+        if (strength <= 0.70) return 0.56;
+        return 0.48;
+    }
+
+    if (strength <= 0.30) return 0.42;
+    if (strength <= 0.55) return 0.34;
+    return 0.26;
+}
+
+function expectedRookieForPick(pick, g) {
+    const strength = projectedPickStrength(pick, g);
+    const round = pick.round || 1;
+    const ovr = expectedRookieOvrForPick(pick, strength);
+    const age = round === 1 ? 21 : 22;
+    const salary = round === 1 ? 4.0 : 1.5;
+    return {
+        id: `expected_${pick.id}`,
+        name: "Expected Rookie",
+        pos: "SG",
+        ovr,
+        off: ovr,
+        def: ovr,
+        age,
+        happiness: 70,
+        contract: { years: 2, salary },
+        potentialGrade: "C"
+    };
+}
+
+export function tradePickValue(pick, { game = null, receivingTeam = null } = {}) {
+    const g = game || STATE.game;
+    const yearsOut = Math.max(0, pick.year - g.year);
+    const strength = projectedPickStrength(pick, g);
+    const expectedRookie = expectedRookieForPick(pick, g);
+    let val = tradePlayerValue(expectedRookie, { receivingTeam, game: g });
+    val *= pickUncertaintyMultiplier(pick, strength);
+    val *= Math.pow(0.84, yearsOut);
+
+    const mode = receivingTeam ? getTeamMode(receivingTeam, g) : "retooling";
+    if (mode === "rebuilding") val *= pick.round === 1 ? 1.12 : 1.06;
+    else if (mode === "win_now" && yearsOut > 0) val *= 0.92;
+
+    return Math.max(1, Math.round(val));
+}
+
+function cpuPlayerValue(p) {
+    return tradePlayerValue(p, { game: STATE.game });
+}
+
+// Value of player p to a specific team — adjusted for positional fit.
+// A scorer to a team that needs scoring is worth more than the same player to a stacked team.
+// When `team` is null/undefined, falls back to base cpuPlayerValue (no fit context).
+function cpuPlayerValueFor(p, team, sendingTeam = null, g = STATE.game) {
+    return tradePlayerValue(p, { receivingTeam: team, sendingTeam, game: g });
+}
+
+function cpuPickValue(pick, currentYear, receivingTeam = null, g = STATE.game) {
+    return tradePickValue(pick, { game: g || { year: currentYear, league: { teams: [] } }, receivingTeam });
 }
 
 // Returns the player `team` should offer, based on what the other team's mode wants.
@@ -1602,14 +2086,17 @@ function cpuPickValue(pick, currentYear) {
 // and biases toward positions the receiver actually needs.
 function pickOfferPlayer(team, requestingMode, receivingTeam = null) {
     const roster = [...team.roster];
-    const POSITIONS = ["PG","SG","SF","PF","C"];
+    const teamPlan = analyzeTeamNeeds(team, STATE.game);
+    const receiverPlan = receivingTeam ? analyzeTeamNeeds(receivingTeam, STATE.game) : null;
+    const tradeBlock = new Set(teamPlan.tradeBlockIds);
+    const corePlayers = new Set(teamPlan.corePlayerIds);
 
     // Find positions the team has surplus at (most players) — prefer trading those
     const posCounts = {};
     POSITIONS.forEach(pos => posCounts[pos] = 0);
     roster.forEach(p => posCounts[p.pos] = (posCounts[p.pos] || 0) + 1);
     const maxCount = Math.max(...POSITIONS.map(pos => posCounts[pos]));
-    const surplusPos = new Set(POSITIONS.filter(pos => posCounts[pos] >= maxCount));
+    const surplusPos = new Set([...teamPlan.surplus, ...POSITIONS.filter(pos => posCounts[pos] >= maxCount)]);
 
     // Receiver positional context: how many players they have at each pos, and what their best OVR is
     const receiverCounts = {};
@@ -1631,6 +2118,7 @@ function pickOfferPlayer(team, requestingMode, receivingTeam = null) {
     // Bonus signal: receiver is THIN at this position (0-1 players, or current best is much worse)
     const isReceiverNeed = (p) => {
         if (!receivingTeam) return false;
+        if (receiverPlan?.needs?.includes(p.pos)) return true;
         const cnt = receiverCounts[p.pos] || 0;
         if (cnt === 0) return true;
         if (cnt === 1 && (receiverBest[p.pos] || 0) < p.ovr - 4) return true;
@@ -1639,15 +2127,21 @@ function pickOfferPlayer(team, requestingMode, receivingTeam = null) {
 
     // A player is safe to trade only if someone else covers their position
     const isTradeSafe = (p) => roster.filter(x => x.pos === p.pos && x.id !== p.id).length >= 1;
+    const isAvailable = (p) => {
+        if (!isTradeSafe(p) || !fitsReceiver(p)) return false;
+        if (tradeBlock.has(p.id)) return true;
+        if (corePlayers.has(p.id) && !p.tradeDemand && (p.happiness ?? 70) >= 45) return false;
+        return surplusPos.has(p.pos) || (p.happiness ?? 70) < 40 || p.tradeDemand;
+    };
 
     let pool;
     if (requestingMode === "win_now") {
-        pool = roster.filter(p => p.age >= 27 && p.ovr >= 74 && isTradeSafe(p) && fitsReceiver(p));
+        pool = roster.filter(p => p.age >= 27 && p.ovr >= 74 && isAvailable(p));
     } else if (requestingMode === "retooling") {
-        pool = roster.filter(p => p.age <= 27 && p.ovr >= 70 && isTradeSafe(p) && fitsReceiver(p));
+        pool = roster.filter(p => p.age <= 29 && p.ovr >= 70 && isAvailable(p));
     } else {
         // rebuilding wants young players
-        pool = roster.filter(p => p.age <= 24 && isTradeSafe(p) && fitsReceiver(p));
+        pool = roster.filter(p => p.age <= 24 && isAvailable(p));
     }
 
     // Sort: receiver-needs first, then surplus positions, then by lowest OVR (keep stars)
@@ -1663,7 +2157,11 @@ function pickOfferPlayer(team, requestingMode, receivingTeam = null) {
     if (pool.length) return pool[0];
 
     // Fallback: any safe player, weakest first (keep receiver fit filter if it applies)
-    const safe = roster.filter(p => isTradeSafe(p) && fitsReceiver(p)).sort((a, b) => a.ovr - b.ovr);
+    const safe = roster.filter(isAvailable).sort((a, b) => {
+        const aBlock = tradeBlock.has(a.id) ? 0 : 1;
+        const bBlock = tradeBlock.has(b.id) ? 0 : 1;
+        return aBlock - bBlock || a.ovr - b.ovr;
+    });
     if (safe.length) return safe[0];
 
     // Final fallback (no receiver fit): any safe player. Preserves prior behavior for legacy paths.
@@ -2248,12 +2746,33 @@ function recalcPayroll(team){
     team.cap.payroll = Number(roster.reduce((sum,p)=> sum + (p.contract?.salary || 0), 0).toFixed(1));
 }
 
+function sumSalary(players){
+    return (players || []).reduce((sum, p) => sum + (p.contract?.salary || 0), 0);
+}
+
+function canCompleteTrade(teamA, teamB, assetsA, assetsB, salaryLimit = SALARY_CAP + 15){
+    const aPlayers = assetsA?.players || [];
+    const bPlayers = assetsB?.players || [];
+    const aPostSize = teamA.roster.length - aPlayers.length + bPlayers.length;
+    const bPostSize = teamB.roster.length - bPlayers.length + aPlayers.length;
+
+    if (aPostSize > ROSTER_MAX || bPostSize > ROSTER_MAX) return false;
+    if (aPostSize < 5 || bPostSize < 5) return false;
+
+    const aPostPayroll = teamA.cap.payroll - sumSalary(aPlayers) + sumSalary(bPlayers);
+    const bPostPayroll = teamB.cap.payroll - sumSalary(bPlayers) + sumSalary(aPlayers);
+
+    if (aPostPayroll > salaryLimit || bPostPayroll > salaryLimit) return false;
+    return true;
+}
+
 export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
     const g = STATE.game;
     const userTeam = g.league.teams.find(t => t.id === userTeamId);
     const otherTeam = g.league.teams.find(t => t.id === otherTeamId);
 
     if (!userTeam || !otherTeam) return false;
+    if (!canCompleteTrade(userTeam, otherTeam, userAssets, otherAssets)) return false;
 
     for (const p of userAssets.players) {
         userTeam.roster = userTeam.roster.filter(x => x.id !== p.id);
@@ -3001,7 +3520,7 @@ export function advanceToNextYear(){
   // Skip if GM is fired — career is effectively over, no point projecting goals.
   if (g.gm && g.gm.status === "active") {
     const userTeam = g.league.teams[g.userTeamIndex];
-    g.gm.expectation = deriveExpectation(userTeam);
+    g.gm.expectation = deriveAdjustedExpectation(userTeam, g);
     g.inbox.unshift({
       t: Date.now(),
       msg: `OWNER GOAL (${g.year}): ${g.gm.expectation.description} (target: ${g.gm.expectation.winTarget} wins).`
@@ -3092,7 +3611,8 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
     championTeam: championTeam?.name || "—",
     awards,
     allTeamRecords,
-    statsLeaders
+    statsLeaders,
+    developmentReport: g.lastDevelopmentReport || []
   });
 
   g.lastSeasonRecap = {
@@ -3102,6 +3622,7 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
     userFinish,
     awards,
     statsLeaders,
+    developmentReport: g.lastDevelopmentReport || [],
     viewed: false
   };
 

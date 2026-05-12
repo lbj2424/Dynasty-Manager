@@ -1,5 +1,5 @@
 import { el, card, button, badge, showPlayerModal } from "../components.js";
-import { getState, startDraft, calculateSignChance, saveToSlot, getActiveSaveSlot, autoDistributeMinutes, advanceFaRound } from "../../state.js";
+import { getState, startDraft, calculateSignChance, saveToSlot, getActiveSaveSlot, autoDistributeMinutes, advanceFaRound, analyzeTeamNeeds, scoreFreeAgentFit, scoreFreeAgentOffer } from "../../state.js";
 import { PHASES, SALARY_CAP } from "../../data/constants.js";
 
 export function FreeAgencyScreen(){
@@ -195,12 +195,21 @@ function showNegotiationModal(p, team, g, onClose){
         ]));
 
         const canAfford = (team.cap.cap - team.cap.payroll) >= offerSalary;
+        const hasRosterSpot = team.roster.length < 15;
+
+        if (!hasRosterSpot) {
+            content.appendChild(el("div", { class:"p", style:"color:var(--bad); margin-top:8px;" },
+                "Roster is full (15 players max). Cut or trade a player before signing anyone."
+            ));
+        }
         
         content.appendChild(button("Submit Offer", {
             primary: true,
             style: "width:100%; margin-top:15px;",
-            disabled: !canAfford,
+            disabled: !canAfford || !hasRosterSpot,
             onClick: () => {
+                if (!canAfford) return alert("Not enough cap space.");
+                if (!hasRosterSpot) return alert("Roster is full (15 players max).");
                 const roll = Math.random() * 100;
                 if (roll <= chance) {
                     alert(`Success! ${p.name} accepted your offer.`);
@@ -232,6 +241,7 @@ function showNegotiationModal(p, team, g, onClose){
 function signPlayer(p, teamId, salary, years){
     const team = getState().game.league.teams.find(t => t.id === teamId);
     if (!team) return;
+    if (team.roster.length >= 15) return;
     
     p.signedByTeamId = teamId;
     p.contract = { years, salary };
@@ -254,14 +264,17 @@ function signPlayer(p, teamId, salary, years){
 function simCpuFreeAgency(g){
     const fa = g.offseason.freeAgents;
     const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
-    const POSITIONS = ["PG","SG","SF","PF","C"];
 
     // 1. Resolve pending offers — best offer wins each player
     for (const p of fa.pool) {
         if (p.signedByTeamId) continue;
         if (!p.offers || p.offers.length === 0) continue;
 
-        p.offers.sort((a,b) => (b.salary * (1 + 0.1 * b.years)) - (a.salary * (1 + 0.1 * a.years)));
+        p.offers.sort((a,b) => {
+            const teamA = g.league.teams.find(t => t.id === a.teamId);
+            const teamB = g.league.teams.find(t => t.id === b.teamId);
+            return scoreFreeAgentOffer(p, b, teamB, g) - scoreFreeAgentOffer(p, a, teamA, g);
+        });
         const best = p.offers[0];
         const team = g.league.teams.find(t => t.id === best.teamId);
         const capLimit = best.isBirdRights ? SALARY_CAP + 20 : team?.cap.cap;
@@ -271,28 +284,24 @@ function simCpuFreeAgency(g){
     }
 
     // 2. Fill remaining roster holes — teams with the most need go first
-    const sortedCpuTeams = [...cpuTeams].sort((a, b) => a.roster.length - b.roster.length);
+    const sortedCpuTeams = [...cpuTeams].sort((a, b) => {
+        const aNeeds = analyzeTeamNeeds(a, g);
+        const bNeeds = analyzeTeamNeeds(b, g);
+        return (a.roster.length - b.roster.length) ||
+            (bNeeds.needs.length - aNeeds.needs.length) ||
+            (aNeeds.capSpace - bNeeds.capSpace);
+    });
 
     for (const t of sortedCpuTeams) {
         let space = t.cap.cap - t.cap.payroll;
 
         while (t.roster.length < 12 && space > 0.5) {
-            const counts = {};
-            POSITIONS.forEach(pos => counts[pos] = 0);
-            t.roster.forEach(p => counts[p.pos] = (counts[p.pos] || 0) + 1);
-
-            // Find the most-needed position (fewest players at that pos)
-            const neededPos = POSITIONS.reduce((a, b) => counts[a] <= counts[b] ? a : b);
-
-            // Try to fill the most-needed position first, then fall back to any affordable fit
-            let pick = fa.pool.find(p =>
-                !p.signedByTeamId && p.ask <= space && p.pos === neededPos
-            );
-            if (!pick) {
-                pick = fa.pool.find(p =>
-                    !p.signedByTeamId && p.ask <= space && (counts[p.pos] || 0) < 3
-                );
-            }
+            const analysis = analyzeTeamNeeds(t, g);
+            const pick = fa.pool
+                .filter(p => !p.signedByTeamId && p.ask <= space)
+                .map(p => ({ p, fit: scoreFreeAgentFit(p, t, g, analysis) }))
+                .filter(x => x.fit >= 48 || t.roster.length < 9)
+                .sort((a, b) => b.fit - a.fit || b.p.ovr - a.p.ovr)[0]?.p;
 
             if (!pick) break;
             signPlayer(pick, t.id, pick.ask, pick.yearsAsk);
