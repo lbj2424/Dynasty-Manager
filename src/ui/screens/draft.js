@@ -65,7 +65,7 @@ export function DraftScreen(){
 function renderBoard(d, g, userOnClock, onClockTeamId){
   const scoutedSet = makeScoutedSet(g);
   
-  const allAvailable = d.declaredProspects.filter(p => !p._drafted);
+  const allAvailable = d.declaredProspects.filter(p => canDraftProspect(p, userOnClock));
   const topGeneral = allAvailable.slice(0, 60);
   const scoutedList = allAvailable.filter(p => scoutedSet.has(p.id));
   
@@ -95,7 +95,7 @@ function renderBoard(d, g, userOnClock, onClockTeamId){
       el("td", {}, p.pos),
       el("td", {}, youKnow ? String(p.currentOVR) : "Unknown"),
       el("td", {}, youKnow ? p.potentialGrade : "Unknown"),
-      el("td", {}, p.pool === "NCAA" ? p.college : (p.continentName || "INTL")),
+      el("td", {}, prospectOriginLabel(p)),
       el("td", {}, youKnow ? "Yes" : "No"),
       el("td", {}, pickBtn)
     ]);
@@ -161,6 +161,10 @@ function renderDrafted(d, g){
 }
 
 function makePick(d, teamId, prospect, g){
+  const userTeam = g.league.teams[g.userTeamIndex];
+  const userOnClock = teamId === userTeam?.id;
+  if (!canDraftProspect(prospect, userOnClock)) return;
+
   const round = d.round;
   const pickOverall = (round - 1) * 32 + (d.pickIndex + 1);
 
@@ -220,29 +224,18 @@ function makePick(d, teamId, prospect, g){
     team.cap.payroll = Number((team.cap.payroll + rookieSalary).toFixed(1));
   }
 
-  advancePickCursor(d);
+  advancePickCursor(d, g);
 }
 
 function cpuPickWeighted(d, teamId, g){
   if (d.done) return; 
-  
-  const scoutedSet = makeScoutedSet(g);
-  
+
   const available = d.declaredProspects.filter(p => {
-      if (p._drafted) return false;
-      if (p.pool === "INTL" && scoutedSet.has(p.id)) {
-          return false; 
-      }
-      return true;
+      return canDraftProspect(p, false);
   });
 
   if (!available.length) {
-    const trulyAny = d.declaredProspects.filter(p => !p._drafted);
-    if (!trulyAny.length) {
-        d.done = true;
-        return;
-    }
-    makePick(d, teamId, trulyAny[0], g);
+    advancePickCursor(d, g);
     return;
   }
 
@@ -299,7 +292,40 @@ function makeScoutedSet(g){
   return set;
 }
 
-function advancePickCursor(d){
+function canDraftProspect(p, userOnClock){
+  if (!p || p._drafted) return false;
+  if (p.visibility === "private"){
+    return userOnClock && p.commitOwner === "user";
+  }
+  return true;
+}
+
+function prospectOriginLabel(p){
+  if (p.pool === "NCAA") return p.college;
+  const origin = p.continentName || "INTL";
+  if (p.visibility === "private") return `${origin} · Private Commit`;
+  if (p.autoDeclared) return `${origin} · Public INTL`;
+  return origin;
+}
+
+function cleanupUndraftedPrivateCommits(d, g){
+  const undraftedPrivateIds = new Set(
+    d.declaredProspects
+      .filter(p => p.visibility === "private" && p.commitOwner === "user" && !p._drafted)
+      .map(p => p.id)
+  );
+  if (!undraftedPrivateIds.size) return;
+
+  g.scouting.intlPool = (g.scouting.intlPool || []).filter(p => !undraftedPrivateIds.has(p.id));
+  g.scouting.scoutedIntlIds = (g.scouting.scoutedIntlIds || []).filter(id => !undraftedPrivateIds.has(id));
+  for (const id of undraftedPrivateIds){
+    delete g.scouting.intlFoundWeekById?.[id];
+  }
+  d.declaredProspects = d.declaredProspects.filter(p => !undraftedPrivateIds.has(p.id));
+  g.inbox.unshift({ t: Date.now(), msg: `${undraftedPrivateIds.size} private international commit(s) returned overseas after going undrafted.` });
+}
+
+function advancePickCursor(d, g){
   d.pickIndex += 1;
   if (d.pickIndex >= 32){
     d.pickIndex = 0;
@@ -307,6 +333,7 @@ function advancePickCursor(d){
   }
   if (d.round > 2){
     d.done = true;
+    cleanupUndraftedPrivateCommits(d, g);
   }
 }
 

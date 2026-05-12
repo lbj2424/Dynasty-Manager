@@ -38,6 +38,11 @@ export function ensureAppState(loadedOrNull){
         };
         for (const p of STATE.game.scouting.intlPool) {
             if (!p.continentKey && p.continentName) p.continentKey = MAP[p.continentName] || "EU";
+            if (p.declared && !p.visibility) {
+                p.visibility = "private";
+                p.commitOwner = "user";
+                p.commitYear = STATE.game.year;
+            }
         }
     }
 
@@ -170,7 +175,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
       scouting: {
         tab: "NCAA",
         ncaa: generateNCAAProspects({ year, count: 100, seed: "ncaa" }),
-        intlPool: generateInternationalPool({ year, count: 100, seed: "intl" }),
+        intlPool: generateInternationalPool({ year, count: 125, seed: "intl" }),
         scoutedNCAAIds: [], scoutedIntlIds: [], intlFoundWeekById: {}, intlLocation: null
       },
       playoffs: null,
@@ -3006,7 +3011,7 @@ function expireIntlFoundProspects(g){
     if (p.declared) { keep.push(p); continue; }
     const fw = found[p.id];
     if (!fw) { keep.push(p); continue; }
-    if ((nowWeek - fw) >= 3){
+    if ((nowWeek - fw) >= 4){
       g.scouting.scoutedIntlIds = g.scouting.scoutedIntlIds.filter(x => x !== p.id);
       delete found[p.id];
       continue;
@@ -3419,6 +3424,9 @@ export function startDraft(){
   const g = STATE.game;
   g.phase = PHASES.DRAFT;
 
+  normalizeInternationalDraftFlags(g);
+  const autoDeclaredIntlCount = autoDeclareInternationalProspects(g);
+
   // Carry unsigned FA pool players into the midseason pool for next season
   const unsigned = (g.offseason.freeAgents?.pool || []).filter(p => !p.signedByTeamId);
   g.midseasonFaPool = unsigned.map(p => ({ ...p, offers: [] }));
@@ -3437,7 +3445,7 @@ export function startDraft(){
 
   const declared = [
     ...g.scouting.ncaa.filter(p => p.declared),
-    ...g.scouting.intlPool.filter(p => p.declared)
+    ...g.scouting.intlPool.filter(p => isInternationalDraftEligibleForPool(p, g))
   ];
   declared.sort((a,b) => (b.currentOVR - a.currentOVR) + (Math.random() - 0.5));
 
@@ -3450,8 +3458,56 @@ export function startDraft(){
     done: false
   };
 
-  g.inbox.unshift({ t: Date.now(), msg: "Draft started (2 rounds)." });
+  const intlMsg = autoDeclaredIntlCount
+    ? ` ${autoDeclaredIntlCount} international prospect(s) publicly entered the draft.`
+    : "";
+  g.inbox.unshift({ t: Date.now(), msg: `Draft started (2 rounds).${intlMsg}` });
   autoSave();
+}
+
+function normalizeInternationalDraftFlags(g){
+  for (const p of (g.scouting?.intlPool || [])){
+    if (p.declared && !p.visibility){
+      p.visibility = "private";
+      p.commitOwner = "user";
+      p.commitYear = g.year;
+    }
+  }
+}
+
+function autoDeclareInternationalProspects(g){
+  const eligible = (g.scouting?.intlPool || []).filter(p =>
+    p.pool === "INTL" &&
+    !p.declared &&
+    p.visibility !== "private"
+  );
+  if (!eligible.length) return 0;
+
+  const target = Math.min(eligible.length, 5 + Math.floor(Math.random() * 16));
+  const ranked = eligible
+    .map(p => ({
+      p,
+      score: p.currentOVR + Math.random() * 20 + (p.age <= 20 ? 2 : 0)
+    }))
+    .sort((a,b) => b.score - a.score);
+
+  for (const { p } of ranked.slice(0, target)){
+    p.declared = true;
+    p.visibility = "public";
+    p.autoDeclared = true;
+    p.commitOwner = null;
+    p.commitYear = g.year;
+  }
+
+  return target;
+}
+
+function isInternationalDraftEligibleForPool(p, g){
+  if (!p.declared) return false;
+  if (p.visibility === "private"){
+    return p.commitOwner === "user" && p.commitYear === g.year;
+  }
+  return true;
 }
 
 function findPickOwner(g, originalOwnerId, year, round){
@@ -3478,7 +3534,7 @@ export function advanceToNextYear(){
   g.lastUserOfferWeek = 0;
   
   g.scouting.ncaa = generateNCAAProspects({ year: g.year, count: 100, seed: "ncaa" });
-  g.scouting.intlPool = generateInternationalPool({ year: g.year, count: 100, seed: "intl" });
+  g.scouting.intlPool = generateInternationalPool({ year: g.year, count: 125, seed: "intl" });
   g.scouting.scoutedNCAAIds = [];
   g.scouting.scoutedIntlIds = [];
   g.scouting.intlFoundWeekById = {};

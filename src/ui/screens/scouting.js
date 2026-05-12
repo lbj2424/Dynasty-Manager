@@ -107,11 +107,16 @@ function renderInternational(){
   ]);
 
   const travelGrid = el("div", { class:"grid" }, CONTINENTS.map(c => {
+    const hiddenCount = g.scouting.intlPool.filter(p =>
+      p.continentKey === c.key && !p.discovered && !p.declared
+    ).length;
+
     return el("div", { class:"card" }, [
       el("div", { class:"spread" }, [
         el("div", {}, [
           el("div", { class:"h2" }, c.name),
-          el("div", { class:"p" }, `Travel: ${c.travelHours}h · Talent density: ${(c.density*100).toFixed(0)}%`)
+          el("div", { class:"p" }, `Travel: ${c.travelHours}h · Talent density: ${(c.density*100).toFixed(0)}%`),
+          el("div", { class:"p" }, `Hidden prospects: ${hiddenCount}`)
         ]),
         badge(c.key)
       ]),
@@ -143,9 +148,11 @@ function renderInternational(){
         const foundCount = rollFoundCount(density);
 
         // find prospects from this continent that are not discovered yet
-        const pool = g.scouting.intlPool.filter(p =>
-          p.continentKey === g.scouting.intlLocation && !p.discovered
-        );
+        const pool = g.scouting.intlPool
+          .filter(p => p.continentKey === g.scouting.intlLocation && !p.discovered && !p.declared)
+          .map(p => ({ p, score: p.currentOVR + Math.random() * 16 }))
+          .sort((a, b) => b.score - a.score)
+          .map(x => x.p);
 
         let actuallyFound = 0;
 
@@ -156,7 +163,7 @@ function renderInternational(){
           p.discovered = true;
           actuallyFound++;
 
-          // mark "found week" ONE time so they can expire after 3 weeks if not declared
+          // mark "found week" ONE time so they can expire after 4 weeks if not declared
           if (!p.declared && !g.scouting.intlFoundWeekById[p.id]){
             g.scouting.intlFoundWeekById[p.id] = g.week;
           }
@@ -181,14 +188,14 @@ function renderInternational(){
 
     const foundWeek = g.scouting.intlFoundWeekById?.[p.id];
     const weeksSinceFound = foundWeek ? (g.week - foundWeek) : 0;
-    const expiresIn = p.declared ? null : clamp(3 - weeksSinceFound, 0, 3);
+    const expiresIn = p.declared ? null : clamp(4 - weeksSinceFound, 0, 4);
 
     return el("tr", {}, [
       el("td", {}, p.name),
       el("td", {}, p.pos),
       el("td", {}, isScouted ? String(p.currentOVR) : "Unknown"),
       el("td", {}, isScouted ? p.potentialGrade : "Unknown"),
-      el("td", {}, p.declared ? "Yes" : "No"),
+      el("td", {}, p.declared ? (p.visibility === "private" ? "Private" : "Public") : "No"),
       el("td", {}, p.declared ? "-" : `${p.declareInterest ?? 0}`),
       el("td", {}, p.declared ? "-" : (foundWeek ? `${expiresIn}w` : "-")),
       el("td", {}, [
@@ -223,9 +230,13 @@ function renderInternational(){
 
             if (p.declareInterest >= DECLARE_THRESHOLD){
               p.declared = true;
-              // once declared, they should never expire
+              p.visibility = "private";
+              p.commitOwner = "user";
+              p.commitYear = g.year;
+              p.autoDeclared = false;
+              // once committed, they should never expire before this draft
               delete g.scouting.intlFoundWeekById[p.id];
-              g.inbox.unshift({ t: Date.now(), msg: `${p.name} (${p.potentialGrade}) agreed to declare for the draft.` });
+              g.inbox.unshift({ t: Date.now(), msg: `${p.name} (${p.potentialGrade}) privately committed to your draft pipeline.` });
             }
 
             rerender();
@@ -236,7 +247,7 @@ function renderInternational(){
   });
 
   return el("div", {}, [
-    card("International Map", "Travel costs hours. Search to discover prospects. Scout then recruit to get them into the draft.", [
+    card("International Map", "Travel costs hours. Search to discover prospects. Scout then recruit players into your private draft pipeline.", [
       top,
       el("div", { class:"sep" }),
       travelGrid
@@ -244,7 +255,7 @@ function renderInternational(){
     card("On-site Actions", "Search takes time and may find nothing. That’s intentional.", [
       actions
     ]),
-    card("Discovered Prospects", "Players can disappear 3 weeks after being found if they haven’t declared.", [
+    card("Discovered Prospects", "Players can disappear 4 weeks after being found if they haven’t committed.", [
       el("div", { class:"p" }, `You have scouted ${g.scouting.scoutedIntlIds.length} international prospects.`),
       el("table", { class:"table" }, [
         el("thead", {}, el("tr", {}, [
