@@ -10,7 +10,7 @@ import {
   PHASES,
   SALARY_CAP
 } from "./data/constants.js";
-import { clamp, id } from "./utils.js";
+import { clamp, id, rng, seedFromString } from "./utils.js";
 
 const KEY_ACTIVE = "dynasty_active_slot";
 const KEY_SAVE_PREFIX = "dynasty_save_";
@@ -50,6 +50,10 @@ export function ensureAppState(loadedOrNull){
     STATE.game.tradeDemandChecked ??= false;
     STATE.game.midseasonFaPool ??= [];
     STATE.game.lastSeasonRecap ??= null;
+    STATE.game.pendingTradeOffers ??= [];
+    STATE.game.lastUserOfferWeek ??= 0;
+    STATE.game.gmReview ??= null;
+    STATE.game.gmJobMarket ??= [];
 
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0; t.losses ??= 0;
@@ -78,6 +82,32 @@ export function ensureAppState(loadedOrNull){
       updateTeamRating(t);
       recalcPayroll(t);
     });
+
+    // Phase 3: assign owner archetypes to any team that doesn't have one yet
+    assignOwners(STATE.game.league?.teams);
+
+    // GM backfill must run AFTER team ratings are recomputed so deriveExpectation uses fresh data
+    if (!STATE.game.gm) {
+        STATE.game.gm = backfillGmFromHistory(STATE.game);
+    } else {
+        // Patch Phase-2/3 fields onto a Phase-1 GM
+        const gm = STATE.game.gm;
+        gm.career ??= {};
+        gm.career.tradesExecuted ??= 0;
+        if (!("activeMandate" in gm)) gm.activeMandate = null;
+        if (!gm.career.teamsHistory || !gm.career.teamsHistory.length) {
+            const userTeam = STATE.game.league.teams[STATE.game.userTeamIndex];
+            gm.career.teamsHistory = userTeam ? [{
+                teamId: userTeam.id,
+                teamName: userTeam.name,
+                startYear: STATE.game.year - (gm.career.yearsAsGM || 0),
+                startingRating: userTeam.rating || 70,
+                titlesWithTeam: gm.career.titles || 0,
+                playoffsWithTeam: gm.career.playoffAppearances || 0,
+                yearsWithTeam: gm.career.yearsAsGM || 0
+            }] : [];
+        }
+    }
     return;
   }
   STATE = newGameState({ userTeamIndex: 0 });
@@ -119,6 +149,9 @@ export function newGameState({ userTeamIndex=0 } = {}){
 
   const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
 
+  // Phase 3: assign owner archetypes to every team
+  assignOwners(league.teams);
+
   return {
     meta: { version: "0.9.0", createdAt: Date.now() },
     activeSaveSlot: null,
@@ -141,7 +174,12 @@ export function newGameState({ userTeamIndex=0 } = {}){
       offseason: { freeAgents: null, draft: null, expiring: [] },
       inbox: [],
       history: [],
-      retiredPlayers: []
+      retiredPlayers: [],
+      pendingTradeOffers: [],
+      lastUserOfferWeek: 0,
+      gm: buildInitialGm(league.teams[userTeamIndex], year),
+      gmReview: null,
+      gmJobMarket: []
     }
   };
 }
@@ -294,7 +332,8 @@ function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
     if (p.ovr >= 85) demandChance = 0.95;
     else if (p.ovr >= 80) demandChance = 0.70;
     else if (p.ovr >= 75) demandChance = 0.40;
-    else if (p.ovr >= 70) demandChance = 0.15;
+    else if (p.ovr >= 70) demandChance = 0.25; // bench/rotation pieces still get looks
+    else if (p.ovr >= 65) demandChance = 0.15; // deep-bench depth deserves some interest
     else demandChance = 0.05;
 
     if (Math.random() > demandChance) return;
@@ -389,6 +428,936 @@ export function calculateSignChance(player, offerSalary, offerYears){
     let chance = (ratio - 0.85) / (1.15 - 0.85) * 100;
 
     return clamp(Math.round(chance), 0, 100);
+}
+
+// -------------------- OWNER ARCHETYPES (Phase 3) --------------------
+// Each team has an owner with a distinct personality that shapes expectations, contracts,
+// firings, and mid-season directives. Archetype is assigned once and persists for the franchise.
+const OWNER_ARCHETYPES = {
+    reasonable: {
+        key: "reasonable",
+        label: "Reasonable",
+        blurb: "Balanced. Wants steady progress.",
+        winTargetDelta: 0,
+        contractYearsDelta: 0,
+        salaryMultiplier: 1.0,
+        fireApprovalThreshold: 30,
+        loyaltyAggression: 1.0,
+        mandateChance: 0.40,
+        mandateBias: ["win_count", "make_playoffs", "trade_acquire", "cut_payroll", "protect_star"]
+    },
+    win_now_zealot: {
+        key: "win_now_zealot",
+        label: "Win-Now Zealot",
+        blurb: "Demands titles now. Pays big. Short leash.",
+        winTargetDelta: 5,
+        contractYearsDelta: -1,
+        salaryMultiplier: 1.20,
+        fireApprovalThreshold: 45,
+        loyaltyAggression: 1.20,
+        mandateChance: 0.65,
+        mandateBias: ["trade_acquire", "win_count", "make_playoffs"]
+    },
+    patient_rebuilder: {
+        key: "patient_rebuilder",
+        label: "Patient Rebuilder",
+        blurb: "Long-term thinker. Tolerates losing if there's growth.",
+        winTargetDelta: -4,
+        contractYearsDelta: 2,
+        salaryMultiplier: 0.95,
+        fireApprovalThreshold: 15,
+        loyaltyAggression: 0.95,
+        mandateChance: 0.30,
+        mandateBias: ["protect_star", "make_playoffs"]
+    },
+    cheap: {
+        key: "cheap",
+        label: "Cheap Owner",
+        blurb: "Cap discipline above all. Will fire over excess spending.",
+        winTargetDelta: 0,
+        contractYearsDelta: 0,
+        salaryMultiplier: 0.75,
+        fireApprovalThreshold: 30,
+        loyaltyAggression: 0.85,
+        mandateChance: 0.55,
+        mandateBias: ["cut_payroll", "cut_payroll", "win_count"]
+    },
+    meddler: {
+        key: "meddler",
+        label: "Meddler",
+        blurb: "Strong opinions. Sends frequent directives.",
+        winTargetDelta: 2,
+        contractYearsDelta: 0,
+        salaryMultiplier: 1.0,
+        fireApprovalThreshold: 30,
+        loyaltyAggression: 1.0,
+        mandateChance: 0.90,
+        mandateBias: ["trade_acquire", "protect_star", "win_count", "cut_payroll", "make_playoffs"]
+    }
+};
+
+const OWNER_NAMES = [
+    "Mr. Caldwell", "Mrs. Patel", "Mr. Voss", "Ms. Chen", "Mr. Davies",
+    "Ms. Reyes", "Mr. Sharpe", "Ms. Okafor", "Mr. Lindgren", "Mr. Wagner",
+    "Ms. Stratton", "Mr. Bishop", "Mrs. Akoto", "Mr. Iverson", "Ms. Yates",
+    "Mr. Hollis", "Mr. Kane", "Mrs. Eriksen", "Mr. Mendel", "Ms. Bishara",
+    "Mr. Quill", "Ms. Tate", "Mr. Pang", "Mr. Levitsky", "Ms. Marek",
+    "Mr. Diop", "Mrs. Ashford", "Mr. Krause", "Ms. Onassis", "Mr. Briggs",
+    "Mr. Faraj", "Ms. Donnelly"
+];
+
+// Owner archetype probabilities — most teams are reasonable; rare extremes are interesting
+function pickOwnerArchetype(rand) {
+    const r = rand();
+    if (r < 0.40) return "reasonable";
+    if (r < 0.55) return "win_now_zealot";
+    if (r < 0.70) return "patient_rebuilder";
+    if (r < 0.85) return "cheap";
+    return "meddler";
+}
+
+// Assign owners to all teams that don't have one. Idempotent. Seeded by team id for stability.
+function assignOwners(teams) {
+    if (!teams) return;
+    for (let i = 0; i < teams.length; i++) {
+        const t = teams[i];
+        if (t.owner && t.owner.archetype && t.owner.name) continue;
+        const seed = seedFromString(`owner_${t.id || i}_v1`);
+        const r = rng(seed);
+        const archetype = pickOwnerArchetype(r);
+        const name = OWNER_NAMES[Math.floor(r() * OWNER_NAMES.length)];
+        t.owner = { archetype, name };
+    }
+}
+
+// Look up an owner's archetype config; falls back to reasonable.
+function ownerConfig(team) {
+    const key = team?.owner?.archetype;
+    return OWNER_ARCHETYPES[key] || OWNER_ARCHETYPES.reasonable;
+}
+
+// Public helper: returns a friendly label + blurb for a team's owner archetype.
+export function getOwnerInfo(team) {
+    const cfg = ownerConfig(team);
+    return {
+        name: team?.owner?.name || "—",
+        archetype: cfg.key,
+        label: cfg.label,
+        blurb: cfg.blurb
+    };
+}
+
+// Public helper: human-readable progress for the active mandate (e.g., "32/45 wins").
+export function getMandateProgress(mandate, g) {
+    if (!mandate) return null;
+    const userTeam = g.league.teams[g.userTeamIndex];
+    if (!userTeam) return null;
+    if (mandate.type === "win_count") {
+        return `${userTeam.wins || 0} / ${mandate.target} wins`;
+    }
+    if (mandate.type === "cut_payroll") {
+        const payroll = userTeam.cap?.payroll || 0;
+        return `Payroll: $${payroll.toFixed(1)}M / $${mandate.target}M target`;
+    }
+    if (mandate.type === "trade_acquire") {
+        return mandate.acquired ? "Acquired ✓" : "Not yet";
+    }
+    if (mandate.type === "protect_star") {
+        return mandate.violated ? "Star traded — failing" : "On track";
+    }
+    if (mandate.type === "make_playoffs") {
+        const standing = getConferenceStandings(g, userTeam.conference);
+        const rank = standing.findIndex(t => t.id === userTeam.id) + 1;
+        return rank > 0 ? `Currently #${rank} in conference` : "Pending standings";
+    }
+    return null;
+}
+
+// -------------------- GM CAREER (Phase 1) --------------------
+// Owner expectation, contract, and annual review. The GM is hired by the owner of the user's team
+// at game start and reviewed each year. Outcomes: fired, hot-seat, status-quo, or contract extension.
+
+// Derive what the owner expects from the team given its current rating. Re-derived every offseason
+// once roster moves settle, so a great year forces higher expectations the year after.
+// Owner archetype adjusts win target and description (zealots want more, rebuilders less).
+function deriveExpectation(team) {
+    const r = team?.rating ?? 70;
+    const owner = ownerConfig(team);
+    let base;
+    if (r >= 85) base = { type: "title",     winTarget: 50, description: "Win the championship" };
+    else if (r >= 78) base = { type: "contender", winTarget: 45, description: "Reach the conference finals" };
+    else if (r >= 70) base = { type: "playoffs",  winTarget: 38, description: "Make the playoffs" };
+    else base = { type: "rebuild", winTarget: 25, description: "Show improvement and develop young talent" };
+
+    // Apply archetype modifier to win target
+    base.winTarget = Math.max(10, base.winTarget + (owner.winTargetDelta || 0));
+
+    // Sharpen description for distinctive archetypes
+    if (owner.key === "win_now_zealot" && base.type !== "title") {
+        base.description = "Push harder — owner demands more.";
+    } else if (owner.key === "patient_rebuilder" && base.type !== "rebuild") {
+        base.description = base.description + " (owner is patient — sustainable growth matters)";
+    } else if (owner.key === "cheap") {
+        base.description = base.description + " (owner watches the payroll closely)";
+    }
+
+    return base;
+}
+
+// Initial salary tier — scales with how demanding the role is. Owner archetype adjusts up/down.
+function computeInitialSalary(expectation, team) {
+    let base;
+    switch (expectation?.type) {
+        case "title":     base = 10; break;
+        case "contender": base = 8; break;
+        case "playoffs":  base = 6; break;
+        case "rebuild":   base = 4; break;
+        default:          base = 5;
+    }
+    const owner = ownerConfig(team);
+    return Math.max(2, Math.min(20, Number((base * (owner.salaryMultiplier || 1.0)).toFixed(1))));
+}
+
+// Build the GM object for a brand-new save. Called once from newGameState.
+function buildInitialGm(userTeam, year) {
+    const expectation = deriveExpectation(userTeam);
+    const salary = computeInitialSalary(expectation, userTeam);
+    const owner = ownerConfig(userTeam);
+    const contractYears = Math.max(2, 3 + (owner.contractYearsDelta || 0));
+    return {
+        contract: {
+            years: contractYears,
+            salary,
+            yearSigned: year,
+            initialSalary: salary
+        },
+        activeMandate: null,
+        status: "active",            // 'active' | 'fired'
+        ownerApproval: 70,
+        expectation,
+        career: {
+            yearsAsGM: 0,
+            titles: 0,
+            finalsAppearances: 0,
+            playoffAppearances: 0,
+            losingSeasons: 0,
+            extensions: 0,
+            tradesExecuted: 0,
+            bestRecord: { wins: 0, losses: 0 },
+            firstTeamName: userTeam?.name || "—",
+            // Per-stint history; new entry pushed when GM moves teams.
+            teamsHistory: userTeam ? [{
+                teamId: userTeam.id,
+                teamName: userTeam.name,
+                startYear: year,
+                startingRating: userTeam.rating || 70,
+                titlesWithTeam: 0,
+                playoffsWithTeam: 0,
+                yearsWithTeam: 0
+            }] : []
+        },
+        reviewHistory: []
+    };
+}
+
+// Backfill an existing save that predates the GM system. Best-effort estimates of career stats
+// from saved history so the player isn't shown as a rookie in year 6.
+function backfillGmFromHistory(g) {
+    const userTeam = g.league.teams[g.userTeamIndex];
+    const gm = buildInitialGm(userTeam, g.year);
+    let titles = 0, finals = 0, playoffs = 0, losing = 0, best = { wins: 0, losses: 0 };
+    for (const h of (g.history || [])) {
+        const rec = h.userRecord || {};
+        if (rec.wins > best.wins) best = { wins: rec.wins, losses: rec.losses };
+        if ((rec.losses ?? 0) > (rec.wins ?? 0)) losing += 1;
+        const f = h.userPlayoffFinish;
+        if (f && f !== "Didn't Make" && f !== "Missed") playoffs += 1;
+        if (f === "Finals" || f === "Champion") finals += 1;
+        if (f === "Champion") titles += 1;
+    }
+    gm.career.yearsAsGM = (g.history || []).length;
+    gm.career.titles = titles;
+    gm.career.finalsAppearances = finals;
+    gm.career.playoffAppearances = playoffs;
+    gm.career.losingSeasons = losing;
+    gm.career.bestRecord = best;
+    // Bump initial salary slightly based on prior success so a long-running save isn't insulting
+    if (titles > 0) gm.contract.salary = Math.min(20, gm.contract.salary + 2 * titles);
+    return gm;
+}
+
+// -------------------- MID-SEASON MANDATES (Phase 3) --------------------
+// Owners issue one directive per season around week 5; check fulfillment at season end.
+
+// Generate a mandate appropriate to the owner archetype + team state.
+// Returns the mandate object (also writes it to gm.activeMandate) or null if none fired.
+function generateMandate(g) {
+    const gm = g.gm;
+    if (!gm || gm.activeMandate || gm.status !== "active") return null;
+    const userTeam = g.league.teams[g.userTeamIndex];
+    if (!userTeam) return null;
+    const owner = ownerConfig(userTeam);
+
+    // Probability gate
+    if (Math.random() > (owner.mandateChance || 0)) return null;
+
+    // Pick type from the archetype bias
+    const bias = owner.mandateBias && owner.mandateBias.length
+        ? owner.mandateBias
+        : ["win_count", "make_playoffs"];
+    const type = bias[Math.floor(Math.random() * bias.length)];
+
+    const mandate = {
+        id: `mandate_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+        type,
+        issuedWeek: g.week,
+        status: "active"
+    };
+
+    if (type === "win_count") {
+        const target = Math.min(g.seasonWeeks * 4 - 5, Math.max(20, (gm.expectation?.winTarget || 38) + 4));
+        mandate.target = target;
+        mandate.description = `Win at least ${target} games this regular season.`;
+        mandate.reward = 12;
+        mandate.penalty = -10;
+    } else if (type === "make_playoffs") {
+        mandate.description = `Make the playoffs.`;
+        mandate.reward = 15;
+        mandate.penalty = -12;
+    } else if (type === "trade_acquire") {
+        const minOvr = 78;
+        mandate.target = minOvr;
+        mandate.description = `Acquire a player rated ${minOvr}+ via trade before the deadline.`;
+        mandate.reward = 14;
+        mandate.penalty = -10;
+        mandate.acquired = false;
+    } else if (type === "cut_payroll") {
+        const cur = userTeam.cap?.payroll || 100;
+        const target = Math.max(60, Math.floor(cur * 0.90));
+        mandate.target = target;
+        mandate.description = `Get team payroll under $${target}M by season's end.`;
+        mandate.reward = 10;
+        mandate.penalty = -8;
+    } else if (type === "protect_star") {
+        const star = (userTeam.roster || [])
+            .filter(p => p.ovr >= 75)
+            .sort((a, b) => b.ovr - a.ovr)[0];
+        if (!star) return null; // no star to protect, skip
+        mandate.targetPlayerId = star.id;
+        mandate.targetPlayerName = star.name;
+        mandate.description = `Do not trade ${star.name} this season.`;
+        mandate.reward = 8;
+        mandate.penalty = -10;
+        mandate.violated = false;
+    } else {
+        return null; // unknown type
+    }
+
+    const ownerName = userTeam.owner?.name || "The owner";
+    mandate.pitch = `${ownerName} has issued a directive: "${mandate.description}"`;
+
+    gm.activeMandate = mandate;
+    g.inbox.unshift({
+        t: Date.now(),
+        msg: `OWNER MANDATE (Week ${g.week}): ${mandate.pitch}`
+    });
+    return mandate;
+}
+
+// Check the active mandate at season end. Applies approval delta, clears the mandate.
+// `opts.payrollSnapshot` is the user's payroll captured BEFORE end-of-season contract expirations,
+// so cut_payroll isn't trivially passed by natural attrition.
+function resolveMandate(g, opts = {}) {
+    const gm = g.gm;
+    if (!gm || !gm.activeMandate) return null;
+    const mandate = gm.activeMandate;
+    const userTeam = g.league.teams[g.userTeamIndex];
+    if (!userTeam) { gm.activeMandate = null; return null; }
+
+    let completed = false;
+    if (mandate.type === "win_count") {
+        completed = (userTeam.wins || 0) >= mandate.target;
+    } else if (mandate.type === "make_playoffs") {
+        const finish = g.lastSeasonRecap?.userFinish;
+        completed = !!finish && finish !== "Didn't Make" && finish !== "Missed";
+    } else if (mandate.type === "trade_acquire") {
+        completed = !!mandate.acquired;
+    } else if (mandate.type === "cut_payroll") {
+        const payroll = opts.payrollSnapshot ?? (userTeam.cap?.payroll || 999);
+        completed = payroll <= mandate.target;
+    } else if (mandate.type === "protect_star") {
+        completed = !mandate.violated;
+    }
+
+    mandate.status = completed ? "completed" : "failed";
+    const delta = completed ? (mandate.reward || 10) : (mandate.penalty || -10);
+    gm.ownerApproval = clamp((gm.ownerApproval ?? 70) + delta, 0, 100);
+
+    const ownerName = userTeam.owner?.name || "Owner";
+    g.inbox.unshift({
+        t: Date.now(),
+        msg: completed
+            ? `MANDATE COMPLETE: ${ownerName} is pleased. (+${delta} approval)`
+            : `MANDATE FAILED: ${ownerName} is unhappy. (${delta} approval)`
+    });
+
+    gm.activeMandate = null;
+    return { completed, delta };
+}
+
+// Stamp the current teamsHistory entry with an end year and final rating. Idempotent.
+function closeCurrentStint(gm, team, year) {
+    const history = gm?.career?.teamsHistory;
+    if (!history || !history.length) return;
+    const stint = history[history.length - 1];
+    if (stint.endYear) return; // already closed
+    stint.endYear = year;
+    stint.endingRating = team?.rating || stint.startingRating || 70;
+}
+
+// End-of-season owner review. Updates the GM's contract, career stats, and decides:
+//   fired | hot_seat | extension | big_extension | lame_duck | status_quo
+// Returns the review object (also written to g.gmReview for the modal to pick up).
+function conductAnnualReview(g, userFinish) {
+    const gm = g.gm;
+    if (!gm || gm.status !== "active") return null;
+
+    const userTeam = g.league.teams[g.userTeamIndex];
+    const wins = userTeam?.wins ?? 0;
+    const losses = userTeam?.losses ?? 0;
+    const winTarget = gm.expectation?.winTarget ?? 38;
+    const expectationType = gm.expectation?.type ?? "playoffs";
+    const winDelta = wins - winTarget;
+    const isChamp = userFinish === "Champion";
+    const isFinals = userFinish === "Finals" || isChamp;
+    const madePlayoffs = userFinish && userFinish !== "Didn't Make" && userFinish !== "Missed";
+
+    // Update career stats
+    gm.career.yearsAsGM += 1;
+    if (isChamp) gm.career.titles += 1;
+    if (isFinals) gm.career.finalsAppearances += 1;
+    if (madePlayoffs) gm.career.playoffAppearances += 1;
+    if (losses > wins) gm.career.losingSeasons += 1;
+    if (wins > (gm.career.bestRecord?.wins || 0)) {
+        gm.career.bestRecord = { wins, losses };
+    }
+    // Per-stint tracking
+    const history = gm.career.teamsHistory || [];
+    const stint = history[history.length - 1];
+    if (stint) {
+        stint.yearsWithTeam = (stint.yearsWithTeam || 0) + 1;
+        if (isChamp) stint.titlesWithTeam = (stint.titlesWithTeam || 0) + 1;
+        if (madePlayoffs) stint.playoffsWithTeam = (stint.playoffsWithTeam || 0) + 1;
+    }
+
+    // Determine verdict
+    let verdict, approvalDelta;
+    if (isChamp) { verdict = "exceeded_title"; approvalDelta = 40; }
+    else if (expectationType === "title" && !isFinals) { verdict = "missed"; approvalDelta = -25; }
+    else if (winDelta >= 10 || (expectationType === "rebuild" && madePlayoffs)) { verdict = "exceeded"; approvalDelta = 25; }
+    else if (winDelta >= 0 || (expectationType === "rebuild" && wins >= winTarget - 3)) { verdict = "met"; approvalDelta = 10; }
+    else if (winDelta >= -5) { verdict = "close"; approvalDelta = -5; }
+    else if (winDelta >= -10) { verdict = "missed"; approvalDelta = -25; }
+    else { verdict = "failed"; approvalDelta = -45; }
+
+    // Rebuilds get a bonus for making the playoffs even if win target wasn't a primary measure
+    if (expectationType === "rebuild" && madePlayoffs && verdict !== "exceeded_title") approvalDelta += 10;
+
+    gm.ownerApproval = clamp(gm.ownerApproval + approvalDelta, 0, 100);
+    gm.contract.years -= 1;
+
+    // Decision logic
+    let action;          // string identifier
+    let salaryChange = 0;
+    let yearsAdded = 0;
+    let ownerMessage;
+
+    const inFinalYear = gm.contract.years <= 0;
+
+    const owner = ownerConfig(userTeam);
+    const fireApproval = owner.fireApprovalThreshold ?? 30;
+
+    if (verdict === "failed" && inFinalYear) {
+        action = "fired";
+        gm.status = "fired";
+        closeCurrentStint(gm, userTeam, g.year);
+        ownerMessage = "The owner has decided to move on. After a disappointing season, you have been relieved of your duties.";
+    } else if (verdict === "missed" && inFinalYear && gm.ownerApproval < fireApproval) {
+        action = "fired";
+        gm.status = "fired";
+        closeCurrentStint(gm, userTeam, g.year);
+        ownerMessage = "The owner has lost confidence. Your contract will not be renewed.";
+    } else if (owner.key === "win_now_zealot" && verdict === "missed" && inFinalYear) {
+        // Zealots fire on any miss in the final year regardless of approval
+        action = "fired";
+        gm.status = "fired";
+        closeCurrentStint(gm, userTeam, g.year);
+        ownerMessage = `${userTeam.owner.name} expects titles. A missed playoff target in your final year is unacceptable.`;
+    } else if (verdict === "exceeded_title") {
+        action = "big_extension";
+        yearsAdded = 2;
+        salaryChange = 0.50;
+        gm.contract.years += yearsAdded;
+        gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
+        gm.career.extensions += 1;
+        ownerMessage = "CHAMPIONSHIP! The owner is overjoyed and tore up your contract for a major extension.";
+    } else if (verdict === "exceeded") {
+        action = "extension";
+        yearsAdded = 1;
+        salaryChange = 0.20;
+        gm.contract.years += yearsAdded;
+        gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
+        gm.career.extensions += 1;
+        ownerMessage = "The owner is impressed. You've earned a contract extension.";
+    } else if (verdict === "met" && inFinalYear) {
+        action = "extension";
+        yearsAdded = 1;
+        salaryChange = 0.05;
+        gm.contract.years += yearsAdded;
+        gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
+        ownerMessage = "Solid season. The owner extended you a modest one-year deal — keep delivering.";
+    } else if ((verdict === "missed" || verdict === "close") && inFinalYear) {
+        action = "hot_seat";
+        yearsAdded = 1;
+        salaryChange = -0.15;
+        gm.contract.years += yearsAdded;
+        gm.contract.salary = Math.max(2, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
+        ownerMessage = "Underwhelming season. The owner is giving you one more year — results are expected.";
+    } else if (inFinalYear) {
+        action = "lame_duck";
+        ownerMessage = "Your contract expires after next season. The owner wants results before discussing an extension.";
+    } else if (verdict === "missed" || verdict === "failed") {
+        action = "warning";
+        ownerMessage = "The owner is not happy with this season. Improvement is expected.";
+    } else {
+        action = "status_quo";
+        ownerMessage = "The owner is satisfied. Keep building.";
+    }
+
+    const review = {
+        year: g.year,
+        wins, losses, winTarget,
+        winDelta,
+        expectationType,
+        expectationDescription: gm.expectation?.description || "",
+        playoffFinish: userFinish,
+        verdict,
+        action,
+        salaryChange,
+        yearsAdded,
+        salary: gm.contract.salary,
+        yearsRemaining: gm.contract.years,
+        ownerApproval: gm.ownerApproval,
+        ownerMessage,
+        viewed: false
+    };
+    gm.reviewHistory.push({ ...review, viewed: undefined });
+    g.gmReview = review;
+
+    return review;
+}
+
+// -------------------- GM CAREER (Phase 2: Reputations + Job Market) --------------------
+
+// Derive earned reputations from the GM's career stats. Pure function over gm + g.
+// Returns an array of { key, label, blurb } — used both for UI badges and poaching-fit logic.
+export function computeReputations(gm, g) {
+    const reps = [];
+    if (!gm || !gm.career) return reps;
+    const c = gm.career;
+    const yrs = c.yearsAsGM || 0;
+
+    if (c.titles >= 3) {
+        reps.push({ key: "dynasty", label: "Dynasty Builder", blurb: "Multiple championships across your career." });
+    } else if (c.titles >= 1) {
+        reps.push({ key: "champion", label: "Champion", blurb: "You've won a title." });
+    }
+    if (c.finalsAppearances >= 3) {
+        reps.push({ key: "finals_veteran", label: "Finals Veteran", blurb: "Repeatedly made the championship round." });
+    }
+    if (yrs >= 3 && (c.playoffAppearances / Math.max(1, yrs)) >= 0.6) {
+        reps.push({ key: "mainstay", label: "Playoff Mainstay", blurb: "Reliable postseason team-builder." });
+    }
+    if (c.tradesExecuted >= 15) {
+        reps.push({ key: "trade_specialist", label: "Trade Specialist", blurb: "Active dealmaker — comfortable on the phones." });
+    }
+    if (yrs >= 8) {
+        reps.push({ key: "veteran", label: "Veteran GM", blurb: "Long-tenured league insider." });
+    }
+    // Rebuilder: any stint where you took a sub-70 rating team to 78+
+    const userTeam = g?.league?.teams?.[g.userTeamIndex];
+    const currentRating = userTeam?.rating || 0;
+    const successfulRebuild = (c.teamsHistory || []).some(t => t.startingRating < 70 && currentRating >= 78);
+    if (successfulRebuild) {
+        reps.push({ key: "rebuilder", label: "Rebuilder", blurb: "Has turned a losing franchise into a contender." });
+    }
+    if (c.losingSeasons >= 4 && c.titles === 0) {
+        reps.push({ key: "embattled", label: "Embattled", blurb: "Has weathered several losing seasons — owners may hesitate." });
+    }
+    return reps;
+}
+
+// Each offseason, decide which CPU teams fire their GMs and open a position.
+// Performance-driven: poor record / steep rating drop = higher chance of an opening.
+// Also a small random component so the market always has movement.
+function simulateLeagueFirings(g) {
+    const teams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+    const openings = [];
+
+    for (const t of teams) {
+        let chance = 0.04; // base 4% random churn
+        const losses = t.losses || 0;
+        const wins = t.wins || 0;
+        const games = wins + losses;
+        if (games > 0) {
+            const winPct = wins / games;
+            if (winPct < 0.30) chance += 0.45;
+            else if (winPct < 0.40) chance += 0.20;
+            else if (winPct < 0.48) chance += 0.06;
+        }
+        if (Math.random() < chance) openings.push(t.id);
+    }
+
+    // Cap openings to 4 per offseason so the league doesn't churn wildly
+    return openings.slice(0, 4);
+}
+
+// Score how attractive a given user (with their reputations) is to a given team.
+// Higher = team more likely to make an aggressive offer. 0-100ish range.
+function poachingFitScore(reps, team, gm) {
+    let score = 30; // baseline interest
+    const repKeys = new Set(reps.map(r => r.key));
+    const teamRating = team.rating || 70;
+    const isContender = teamRating >= 78;
+    const isRebuild = teamRating < 70;
+
+    // Reputation match
+    if (repKeys.has("dynasty")) score += 35;
+    if (repKeys.has("champion")) score += 20;
+    if (repKeys.has("finals_veteran")) score += 15;
+    if (repKeys.has("mainstay")) score += 12;
+    if (repKeys.has("trade_specialist")) score += 8;
+    if (repKeys.has("veteran")) score += 5;
+    if (repKeys.has("rebuilder") && isRebuild) score += 25;
+    if (repKeys.has("rebuilder") && isContender) score += 5;
+    if (repKeys.has("embattled")) score -= 20;
+
+    // Contenders chase proven winners — not someone with losing seasons
+    if (isContender && (gm?.career?.losingSeasons || 0) >= 3) score -= 15;
+    // Rebuilders are happy with anyone who's worked at this level
+    if (isRebuild) score += 5;
+
+    return score;
+}
+
+// Build a contract pitch from a hiring team to the user. Salary scales with the team's level
+// of need and the user's reputation. Years are tighter for contenders (less patience).
+function generatePoachingOffer(team, gm, reps) {
+    const teamRating = team.rating || 70;
+    const tier = teamRating >= 82 ? "title"
+        : teamRating >= 76 ? "contender"
+        : teamRating >= 68 ? "playoffs"
+        : "rebuild";
+
+    // Base salary tier — higher for higher-stakes jobs
+    const baseSalary = tier === "title" ? 12
+        : tier === "contender" ? 9
+        : tier === "playoffs" ? 7
+        : 5;
+
+    // Reputation bonus
+    const repKeys = new Set(reps.map(r => r.key));
+    let mult = 1.0;
+    if (repKeys.has("dynasty")) mult += 0.40;
+    else if (repKeys.has("champion")) mult += 0.20;
+    if (repKeys.has("finals_veteran")) mult += 0.10;
+    if (repKeys.has("rebuilder") && tier === "rebuild") mult += 0.15;
+    if (repKeys.has("embattled")) mult -= 0.10;
+
+    // Owner archetype shapes the offer further — zealots overpay, cheap owners under-pay
+    const owner = ownerConfig(team);
+    mult *= (owner.salaryMultiplier || 1.0);
+
+    const salary = Math.max(3, Math.min(22, Number((baseSalary * mult).toFixed(1))));
+
+    // Title contenders want shorter, results-now deals; rebuilders give longer runways
+    let years = tier === "title" ? 3
+        : tier === "contender" ? 3
+        : tier === "playoffs" ? 4
+        : 5;
+    years = Math.max(2, years + (owner.contractYearsDelta || 0));
+
+    // Build pitch, using owner name and archetype flavor
+    const ownerName = team.owner?.name || `${team.name} owner`;
+    let pitch;
+    if (owner.key === "win_now_zealot") {
+        pitch = `${ownerName}: "We're done waiting. Win us a title or you're gone. We'll pay for the right person."`;
+    } else if (owner.key === "patient_rebuilder") {
+        pitch = `${ownerName}: "We're playing the long game. You'll get the runway to build it properly."`;
+    } else if (owner.key === "cheap") {
+        pitch = `${ownerName}: "We need a GM who can squeeze value. The cap is sacred here."`;
+    } else if (owner.key === "meddler") {
+        pitch = `${ownerName}: "I have a lot of ideas. I need a GM who can execute them. You in?"`;
+    } else if (tier === "title" && repKeys.has("champion")) {
+        pitch = `${ownerName}: "We're built to win now. We need a closer who's done it before — that's you."`;
+    } else if (tier === "rebuild" && repKeys.has("rebuilder")) {
+        pitch = `${ownerName}: "We saw what you did before. Come run our rebuild. You'll have full control."`;
+    } else if (tier === "contender") {
+        pitch = `${ownerName}: "We're knocking on the door. The right GM gets us through — we think it's you."`;
+    } else if (tier === "rebuild") {
+        pitch = `${ownerName}: "We're starting fresh. Patient ownership, real autonomy. Help us climb out."`;
+    } else {
+        pitch = `${ownerName}: "We want stability and a path forward. Your name keeps coming up."`;
+    }
+
+    return {
+        id: `poach_${team.id}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+        teamId: team.id,
+        teamName: team.name,
+        teamRating,
+        teamTier: tier,
+        contractYears: years,
+        salary,
+        pitch,
+        kind: "poaching" // 'poaching' | 'wilderness'
+    };
+}
+
+// Wilderness offers for a fired GM — fewer, smaller, but a path back to a job.
+// Always at least 1 if there are any openings; max 2.
+function generateWildernessOffers(g, openings) {
+    const offers = [];
+    const teams = openings
+        .map(id => g.league.teams.find(t => t.id === id))
+        .filter(Boolean)
+        .sort((a, b) => (a.rating || 70) - (b.rating || 70)); // worst first
+
+    const pool = teams.slice(0, 4);
+    for (const t of pool) {
+        if (offers.length >= 2) break;
+        // Wilderness offers are 1-2 year low-tier deals
+        const salary = Math.max(2.5, Math.min(6, Number(((t.rating || 65) / 18).toFixed(1))));
+        const ownerName = t.owner?.name || `${t.name} owner`;
+        offers.push({
+            id: `wild_${t.id}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+            teamId: t.id,
+            teamName: t.name,
+            teamRating: t.rating || 65,
+            teamTier: "rebuild",
+            contractYears: 2,
+            salary,
+            pitch: `${ownerName}: "We need a steady hand — willing to take a chance on a comeback. One-year-show-me deal with an option."`,
+            kind: "wilderness"
+        });
+    }
+    return offers;
+}
+
+// Generate a loyalty counter-offer from the user's current owner, IF they care enough to match.
+// Owner approval drives both willingness to counter and how aggressively they match.
+// Returns an offer object (kind: 'loyalty') or null.
+function generateLoyaltyCounter(g, gm, bestPoachingSalary) {
+    if (!gm || gm.status !== "active") return null;
+    const approval = gm.ownerApproval ?? 70;
+    if (approval < 60) return null; // owner won't fight to keep you
+
+    const currentTeam = g.league.teams[g.userTeamIndex];
+    if (!currentTeam) return null;
+    const currentSalary = gm.contract?.salary || 0;
+    const owner = ownerConfig(currentTeam);
+
+    // Multiplier scales with approval — beloved GMs get pampered.
+    // Owner archetype further modulates: zealots fight harder, cheap owners less.
+    let mult;
+    if (approval >= 80) mult = 1.05;        // beat best by 5%
+    else if (approval >= 70) mult = 1.00;   // match best
+    else mult = 0.95;                       // try, but tighter
+    mult *= (owner.loyaltyAggression || 1.0);
+
+    const counterSalary = Math.max(currentSalary, Number((bestPoachingSalary * mult).toFixed(1)));
+    // If the owner's best effort still doesn't beat current salary, they pass
+    if (counterSalary <= currentSalary) return null;
+
+    // Extension: more years for higher approval
+    const yearsAdded = approval >= 80 ? 3 : 2;
+
+    const ownerName = currentTeam.owner?.name || `${currentTeam.name} owner`;
+    const pitch = approval >= 80
+        ? `${ownerName}: "You're our guy. Other teams are calling — let's make sure they stop. New deal on the table."`
+        : approval >= 70
+        ? `${ownerName}: "We want you here. Let's match what's out there and keep building."`
+        : `${ownerName}: "We'd like you to stay. This is our best offer to keep you on board."`;
+
+    return {
+        id: `loyalty_${currentTeam.id}_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+        teamId: currentTeam.id,
+        teamName: currentTeam.name,
+        teamRating: currentTeam.rating || 70,
+        teamTier: gm.expectation?.type || "playoffs",
+        contractYears: yearsAdded,        // years ADDED to current contract
+        salary: counterSalary,
+        pitch,
+        kind: "loyalty"
+    };
+}
+
+// Build the job market for the user this offseason. Called from finalizeSeasonAndLogHistory
+// AFTER conductAnnualReview so we know if they're active or fired.
+function buildJobMarket(g) {
+    g.gmJobMarket = [];
+    const gm = g.gm;
+    if (!gm) return;
+
+    const openings = simulateLeagueFirings(g);
+    if (!openings.length) return;
+
+    const reps = computeReputations(gm, g);
+
+    if (gm.status === "fired") {
+        g.gmJobMarket = generateWildernessOffers(g, openings);
+        return;
+    }
+
+    // Active GM: each opening considers whether to chase the user based on fit
+    const offers = [];
+    for (const teamId of openings) {
+        const team = g.league.teams.find(t => t.id === teamId);
+        if (!team) continue;
+        const fit = poachingFitScore(reps, team, gm);
+        // Convert fit score to a probability; cap at ~65% so even great fits don't always come calling
+        const chance = clamp((fit - 30) / 100, 0, 0.65);
+        if (Math.random() < chance) {
+            offers.push(generatePoachingOffer(team, gm, reps));
+        }
+    }
+
+    // Filter: a CPU team only makes the offer if it actually beats the user's current salary.
+    // (Otherwise they know the user won't bite, so they don't bother.)
+    const currentSalary = gm.contract?.salary || 0;
+    const qualifiedPoaching = offers.filter(o => o.salary > currentSalary).slice(0, 3);
+
+    // Counter offer from current team — only if there's something credible to counter
+    const poachingOffers = [...qualifiedPoaching];
+    if (poachingOffers.length) {
+        const bestSalary = Math.max(...poachingOffers.map(o => o.salary));
+        const counter = generateLoyaltyCounter(g, gm, bestSalary);
+        if (counter) poachingOffers.unshift(counter); // loyalty offer at top
+    }
+
+    g.gmJobMarket = poachingOffers;
+
+    const poachCount = qualifiedPoaching.length;
+    if (poachCount > 0) {
+        const loyaltyPart = poachingOffers.some(o => o.kind === "loyalty")
+            ? " Your owner has countered with a loyalty offer."
+            : "";
+        g.inbox.unshift({
+            t: Date.now(),
+            msg: `JOB MARKET: ${poachCount} team${poachCount > 1 ? "s have" : " has"} reached out about your GM services.${loyaltyPart} See the Job Market on the Dashboard.`
+        });
+    }
+}
+
+// Accept a poaching offer. Closes the current team stint, switches the user to the new team,
+// resets contract and approval, and clears team-specific session state.
+export function acceptPoachingOffer(offerId) {
+    const g = STATE.game;
+    const gm = g.gm;
+    if (!gm) return { success: false, msg: "No GM state." };
+    const offer = (g.gmJobMarket || []).find(o => o.id === offerId);
+    if (!offer) return { success: false, msg: "Offer not found." };
+
+    const newTeam = g.league.teams.find(t => t.id === offer.teamId);
+    if (!newTeam) return { success: false, msg: "Team no longer exists." };
+    const newIndex = g.league.teams.findIndex(t => t.id === offer.teamId);
+    if (newIndex < 0) return { success: false, msg: "Team not in league." };
+
+    // Close out current stint (if any). Fired GMs already closed theirs in conductAnnualReview.
+    const currentTeam = g.league.teams[g.userTeamIndex];
+    if (gm.status === "active") {
+        closeCurrentStint(gm, currentTeam, g.year);
+    }
+
+    // Push the new stint
+    const history = gm.career.teamsHistory || [];
+    history.push({
+        teamId: newTeam.id,
+        teamName: newTeam.name,
+        startYear: g.year + 1, // takes effect for the upcoming season
+        startingRating: newTeam.rating || 70,
+        titlesWithTeam: 0,
+        playoffsWithTeam: 0,
+        yearsWithTeam: 0
+    });
+    gm.career.teamsHistory = history;
+
+    // Switch teams and reset contract / owner
+    g.userTeamIndex = newIndex;
+    gm.contract = {
+        years: offer.contractYears,
+        salary: offer.salary,
+        yearSigned: g.year,
+        initialSalary: offer.salary
+    };
+    gm.status = "active";
+    gm.ownerApproval = 70;
+    gm.expectation = deriveExpectation(newTeam);
+    gm.activeMandate = null; // mandate was issued by old owner — drop it
+
+    // Clear team-specific session state — these all belong to the old team
+    g.pendingTradeOffers = [];
+    g.midseasonFaPool = [];
+    g.lastUserOfferWeek = 0;
+    g.tradeDemandChecked = false;
+    g.gmJobMarket = [];
+
+    g.inbox.unshift({
+        t: Date.now(),
+        msg: `NEW JOB: You are now the GM of the ${newTeam.name}. ${offer.contractYears} years at $${offer.salary}M/yr.`
+    });
+    autoSave();
+    return { success: true, msg: `Welcome to the ${newTeam.name}.`, newTeamName: newTeam.name };
+}
+
+// Accept a loyalty counter-offer from the current team. Extends the existing contract by the
+// counter's years and bumps salary to the counter amount. Clears the entire job market.
+export function acceptLoyaltyOffer(offerId) {
+    const g = STATE.game;
+    const gm = g.gm;
+    if (!gm) return { success: false, msg: "No GM state." };
+    const offer = (g.gmJobMarket || []).find(o => o.id === offerId);
+    if (!offer || offer.kind !== "loyalty") return { success: false, msg: "Loyalty offer not found." };
+
+    // Sanity: the loyalty offer must reference the current team
+    const currentTeam = g.league.teams[g.userTeamIndex];
+    if (!currentTeam || currentTeam.id !== offer.teamId) {
+        return { success: false, msg: "Offer no longer valid." };
+    }
+
+    gm.contract.years = (gm.contract.years || 0) + offer.contractYears;
+    gm.contract.salary = offer.salary;
+    gm.career.extensions = (gm.career.extensions || 0) + 1;
+
+    g.gmJobMarket = [];
+    g.inbox.unshift({
+        t: Date.now(),
+        msg: `LOYALTY DEAL: Extended ${offer.contractYears} years with ${currentTeam.name} at $${offer.salary.toFixed(1)}M/yr. Outside offers declined.`
+    });
+    autoSave();
+    return { success: true, msg: `You signed an extension with the ${currentTeam.name}.` };
+}
+
+export function declineAllPoachingOffers() {
+    const g = STATE.game;
+    g.gmJobMarket = [];
+    if (g.gm?.status === "active") {
+        g.inbox.unshift({
+            t: Date.now(),
+            msg: `You declined all outside interest. Staying put for now.`
+        });
+    }
+    autoSave();
+    return { success: true };
 }
 
 // -------------------- PROGRESSION & SIMULATION --------------------
@@ -510,7 +1479,7 @@ function processEndSeasonRoster(g){
     
     t.roster = nextRoster;
     // Clear trade demands for next season
-    for (const p of t.roster) { p.tradeDemand = false; }
+    for (const p of t.roster) { p.tradeDemand = false; p.tradeDemandReason = null; }
     autoDistributeMinutes(t);
     recalcPayroll(t);
     updateTeamRating(t);
@@ -599,6 +1568,28 @@ function cpuPlayerValue(p) {
     return Math.round(val);
 }
 
+// Value of player p to a specific team — adjusted for positional fit.
+// A scorer to a team that needs scoring is worth more than the same player to a stacked team.
+// When `team` is null/undefined, falls back to base cpuPlayerValue (no fit context).
+function cpuPlayerValueFor(p, team) {
+    const baseVal = cpuPlayerValue(p);
+    if (!p || !team) return baseVal;
+    const sameSpot = team.roster.filter(r => r.pos === p.pos && r.id !== p.id);
+    const countAtPos = sameSpot.length;
+    const bestAtPos = sameSpot.reduce((max, r) => Math.max(max, r.ovr || 0), 0);
+
+    let fitMult = 1.0;
+    if (countAtPos === 0) fitMult = 1.30;                                // huge need
+    else if (countAtPos === 1 && bestAtPos < p.ovr - 4) fitMult = 1.20;  // clear upgrade
+    else if (countAtPos === 1) fitMult = 1.05;                           // depth, slight bonus
+    else if (countAtPos === 2 && bestAtPos < p.ovr - 4) fitMult = 1.10;  // upgrade over starter
+    else if (countAtPos === 2) fitMult = 0.95;                           // ok depth
+    else if (countAtPos >= 3 && p.ovr > bestAtPos + 2) fitMult = 0.90;   // would supplant but stacked
+    else if (countAtPos >= 3) fitMult = 0.65;                            // already stacked
+
+    return Math.round(baseVal * fitMult);
+}
+
 function cpuPickValue(pick, currentYear) {
     const yearsOut = Math.max(0, pick.year - currentYear);
     const base = pick.round === 1 ? 300 : 80;
@@ -607,7 +1598,9 @@ function cpuPickValue(pick, currentYear) {
 
 // Returns the player `team` should offer, based on what the other team's mode wants.
 // Prefers trading from overstocked positions; avoids leaving a position empty.
-function pickOfferPlayer(team, requestingMode) {
+// If `receivingTeam` is provided, also filters out positions the receiver is already deep at
+// and biases toward positions the receiver actually needs.
+function pickOfferPlayer(team, requestingMode, receivingTeam = null) {
     const roster = [...team.roster];
     const POSITIONS = ["PG","SG","SF","PF","C"];
 
@@ -618,21 +1611,50 @@ function pickOfferPlayer(team, requestingMode) {
     const maxCount = Math.max(...POSITIONS.map(pos => posCounts[pos]));
     const surplusPos = new Set(POSITIONS.filter(pos => posCounts[pos] >= maxCount));
 
+    // Receiver positional context: how many players they have at each pos, and what their best OVR is
+    const receiverCounts = {};
+    const receiverBest = {};
+    if (receivingTeam) {
+        POSITIONS.forEach(pos => { receiverCounts[pos] = 0; receiverBest[pos] = 0; });
+        for (const r of receivingTeam.roster) {
+            receiverCounts[r.pos] = (receiverCounts[r.pos] || 0) + 1;
+            if (r.ovr > (receiverBest[r.pos] || 0)) receiverBest[r.pos] = r.ovr;
+        }
+    }
+    // Receiver doesn't want a player at a position they're already stacked at (3+) unless the player is a clear upgrade
+    const fitsReceiver = (p) => {
+        if (!receivingTeam) return true;
+        const cnt = receiverCounts[p.pos] || 0;
+        if (cnt >= 3 && p.ovr <= (receiverBest[p.pos] || 0)) return false;
+        return true;
+    };
+    // Bonus signal: receiver is THIN at this position (0-1 players, or current best is much worse)
+    const isReceiverNeed = (p) => {
+        if (!receivingTeam) return false;
+        const cnt = receiverCounts[p.pos] || 0;
+        if (cnt === 0) return true;
+        if (cnt === 1 && (receiverBest[p.pos] || 0) < p.ovr - 4) return true;
+        return false;
+    };
+
     // A player is safe to trade only if someone else covers their position
     const isTradeSafe = (p) => roster.filter(x => x.pos === p.pos && x.id !== p.id).length >= 1;
 
     let pool;
     if (requestingMode === "win_now") {
-        pool = roster.filter(p => p.age >= 27 && p.ovr >= 74 && isTradeSafe(p));
+        pool = roster.filter(p => p.age >= 27 && p.ovr >= 74 && isTradeSafe(p) && fitsReceiver(p));
     } else if (requestingMode === "retooling") {
-        pool = roster.filter(p => p.age <= 27 && p.ovr >= 70 && isTradeSafe(p));
+        pool = roster.filter(p => p.age <= 27 && p.ovr >= 70 && isTradeSafe(p) && fitsReceiver(p));
     } else {
         // rebuilding wants young players
-        pool = roster.filter(p => p.age <= 24 && isTradeSafe(p));
+        pool = roster.filter(p => p.age <= 24 && isTradeSafe(p) && fitsReceiver(p));
     }
 
-    // Sort: surplus positions first, then by lowest OVR (keep stars)
+    // Sort: receiver-needs first, then surplus positions, then by lowest OVR (keep stars)
     pool.sort((a, b) => {
+        const aNeed = isReceiverNeed(a) ? 0 : 1;
+        const bNeed = isReceiverNeed(b) ? 0 : 1;
+        if (aNeed !== bNeed) return aNeed - bNeed;
         const aSurplus = surplusPos.has(a.pos) ? 0 : 1;
         const bSurplus = surplusPos.has(b.pos) ? 0 : 1;
         return aSurplus - bSurplus || a.ovr - b.ovr;
@@ -640,9 +1662,13 @@ function pickOfferPlayer(team, requestingMode) {
 
     if (pool.length) return pool[0];
 
-    // Fallback: any safe player, weakest first
-    const safe = roster.filter(isTradeSafe).sort((a, b) => a.ovr - b.ovr);
-    return safe[0] || null;
+    // Fallback: any safe player, weakest first (keep receiver fit filter if it applies)
+    const safe = roster.filter(p => isTradeSafe(p) && fitsReceiver(p)).sort((a, b) => a.ovr - b.ovr);
+    if (safe.length) return safe[0];
+
+    // Final fallback (no receiver fit): any safe player. Preserves prior behavior for legacy paths.
+    const anySafe = roster.filter(isTradeSafe).sort((a, b) => a.ovr - b.ovr);
+    return anySafe[0] || null;
 }
 
 // CPU teams lock up young stars / valuable players mid-season before they hit free agency
@@ -817,6 +1843,167 @@ function simCpuTrades(g, week){
     }
 }
 
+// CPU teams send trade offers TO the user. Throttled so the user isn't spammed.
+// Pending offers are visible on the Dashboard with Accept / Decline buttons.
+function simCpuOffersToUser(g, week) {
+    if (week > TRADE_DEADLINE_WEEK) return;
+    g.pendingTradeOffers ??= [];
+    g.lastUserOfferWeek ??= 0;
+
+    // Expire stale offers
+    g.pendingTradeOffers = g.pendingTradeOffers.filter(o => o.expiresWeek >= week);
+
+    // Throttle: at most 2 pending offers, and at least 2 weeks between new ones
+    if (g.pendingTradeOffers.length >= 2) return;
+    if (week - g.lastUserOfferWeek < 2) return;
+    if (Math.random() > 0.35) return;
+
+    const userTeam = g.league.teams[g.userTeamIndex];
+    if (!userTeam || userTeam.roster.length < 6) return;
+
+    const cpuTeams = g.league.teams.filter(t => t.id !== userTeam.id);
+    const shuffled = [...cpuTeams].sort(() => 0.5 - Math.random());
+
+    for (const cpu of shuffled.slice(0, 6)) {
+        if (cpu.roster.length < 6) continue;
+        const cpuMode = getTeamMode(cpu, g);
+        const userMode = getTeamMode(userTeam, g);
+
+        // CPU wants a player from user roster that fits their mode. Pickoffer picks from user surplus
+        // that fits CPU's needs — exactly the receiver-aware logic we built earlier.
+        const target = pickOfferPlayer(userTeam, cpuMode, cpu);
+        if (!target) continue;
+        if (target.ovr < 70) continue; // CPU doesn't initiate offers for fringe bench
+        // Skip top-tier user stars unless they're aging or unhappy — keeps offers realistic
+        if (target.ovr >= 85 && target.age < 30 && (target.happiness ?? 70) >= 55) continue;
+
+        // CPU sends a player from their roster that fits user's needs
+        const offerPlayer = pickOfferPlayer(cpu, userMode, userTeam);
+        if (!offerPlayer || offerPlayer.id === target.id) continue;
+
+        // Fit-adjusted valuations from each side's perspective
+        const userViewOfOffer = cpuPlayerValueFor(offerPlayer, userTeam);
+        const userViewOfTarget = cpuPlayerValueFor(target, userTeam);
+        const cpuViewOfTarget = cpuPlayerValueFor(target, cpu);
+        const cpuViewOfOffer = cpuPlayerValueFor(offerPlayer, cpu);
+
+        // For a credible offer, CPU should value its incoming target more than what it's giving up
+        if (cpuViewOfTarget < cpuViewOfOffer * 0.85) continue;
+
+        // From user's side: gap = what they're losing minus what they're getting (in user's eyes)
+        const userGap = userViewOfTarget - userViewOfOffer;
+        let extraPicks = [];
+        if (userGap > 0) {
+            // CPU sweetens with picks; aim to cover ~70% of the gap (slight tilt favors CPU)
+            const sweetener = _gatherPicks(cpu, userGap * 0.70, 2, g);
+            if (sweetener) extraPicks = sweetener;
+            else if (userGap / Math.max(1, userViewOfTarget) > 0.30) continue; // gap too big, can't sweeten
+        }
+
+        // Cap validation — both teams must still be feasible after the swap
+        const targetSal = target.contract?.salary || 0;
+        const offerSal = offerPlayer.contract?.salary || 0;
+        if ((cpu.cap.payroll - offerSal + targetSal) > SALARY_CAP + 15) continue;
+        if ((userTeam.cap.payroll - targetSal + offerSal) > SALARY_CAP + 15) continue;
+
+        // Reason text describing why CPU is making this offer
+        const reasonText = cpuMode === "win_now" ? "pushing for a title run"
+            : cpuMode === "rebuilding" ? "rebuilding around young talent"
+            : "retooling on the fly";
+
+        const offerId = `offer_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
+        const offer = {
+            id: offerId,
+            fromTeamId: cpu.id,
+            fromTeamName: cpu.name,
+            userPlayerIds: [target.id],
+            userPickIds: [],
+            otherPlayerIds: [offerPlayer.id],
+            otherPickIds: extraPicks.map(pk => pk.id),
+            weekCreated: week,
+            expiresWeek: week + 3,
+            reason: reasonText
+        };
+
+        g.pendingTradeOffers.push(offer);
+        g.lastUserOfferWeek = week;
+
+        const pickPart = extraPicks.length ? ` + ${extraPicks.length} pick${extraPicks.length > 1 ? 's' : ''}` : '';
+        g.inbox.unshift({
+            t: Date.now(),
+            msg: `TRADE OFFER: ${cpu.name} (${reasonText}) wants ${target.name} for ${offerPlayer.name}${pickPart}. Review on Dashboard.`
+        });
+        return; // one offer per week
+    }
+}
+
+// Try to accept a pending CPU-initiated offer. Validates that all assets still exist before executing.
+export function acceptUserTradeOffer(offerId) {
+    const g = STATE.game;
+    g.pendingTradeOffers ??= [];
+    const offer = g.pendingTradeOffers.find(o => o.id === offerId);
+    if (!offer) return { success: false, msg: "Offer not found." };
+
+    const userTeam = g.league.teams[g.userTeamIndex];
+    const cpuTeam = g.league.teams.find(t => t.id === offer.fromTeamId);
+    if (!userTeam || !cpuTeam) return { success: false, msg: "Team no longer exists." };
+
+    // Validate all assets are still in place
+    const userPlayers = offer.userPlayerIds.map(pid => userTeam.roster.find(p => p.id === pid));
+    const otherPlayers = offer.otherPlayerIds.map(pid => cpuTeam.roster.find(p => p.id === pid));
+    if (userPlayers.some(p => !p) || otherPlayers.some(p => !p)) {
+        g.pendingTradeOffers = g.pendingTradeOffers.filter(o => o.id !== offerId);
+        return { success: false, msg: "Offer is no longer valid (player moved)." };
+    }
+    const userPicks = offer.userPickIds.map(pid => (userTeam.assets?.picks || []).find(pk => pk.id === pid));
+    const otherPicks = offer.otherPickIds.map(pid => (cpuTeam.assets?.picks || []).find(pk => pk.id === pid));
+    if (userPicks.some(pk => !pk) || otherPicks.some(pk => !pk)) {
+        g.pendingTradeOffers = g.pendingTradeOffers.filter(o => o.id !== offerId);
+        return { success: false, msg: "Offer is no longer valid (pick moved)." };
+    }
+
+    // Cap and roster checks
+    const userOutSal = userPlayers.reduce((s, p) => s + (p.contract?.salary || 0), 0);
+    const cpuOutSal = otherPlayers.reduce((s, p) => s + (p.contract?.salary || 0), 0);
+    if ((userTeam.cap.payroll - userOutSal + cpuOutSal) > SALARY_CAP + 15) {
+        return { success: false, msg: "Cap would be exceeded." };
+    }
+    const userPostSize = userTeam.roster.length - userPlayers.length + otherPlayers.length;
+    if (userPostSize > 15 || userPostSize < 5) {
+        return { success: false, msg: "Roster size would be out of bounds." };
+    }
+
+    const ok = executeTrade(
+        userTeam.id, cpuTeam.id,
+        { players: userPlayers, picks: userPicks },
+        { players: otherPlayers, picks: otherPicks }
+    );
+    if (!ok) return { success: false, msg: "Trade failed." };
+
+    g.pendingTradeOffers = g.pendingTradeOffers.filter(o => o.id !== offerId);
+    g.inbox.unshift({
+        t: Date.now(),
+        msg: `TRADE ACCEPTED: Deal with ${cpuTeam.name} completed.`
+    });
+    autoSave();
+    return { success: true, msg: "Trade accepted." };
+}
+
+export function declineUserTradeOffer(offerId) {
+    const g = STATE.game;
+    g.pendingTradeOffers ??= [];
+    const offer = g.pendingTradeOffers.find(o => o.id === offerId);
+    g.pendingTradeOffers = g.pendingTradeOffers.filter(o => o.id !== offerId);
+    if (offer) {
+        g.inbox.unshift({
+            t: Date.now(),
+            msg: `Declined offer from ${offer.fromTeamName}.`
+        });
+    }
+    autoSave();
+    return { success: true };
+}
+
 // Collect picks from `team` totaling roughly `targetVal`, up to `maxPicks`. Returns null if can't reach 40% of target.
 function _gatherPicks(team, targetVal, maxPicks, g) {
     const avail = (team.assets?.picks || [])
@@ -836,11 +2023,12 @@ function _gatherPicks(team, targetVal, maxPicks, g) {
 // 1-for-1 player swap, with up to 2 picks added on one side to balance
 function cpuDeal_PlayerSwap(t1, t2, mode1, mode2, g) {
     if (!t1.roster.length || !t2.roster.length) return null;
-    const p1 = pickOfferPlayer(t1, mode2);
-    const p2 = pickOfferPlayer(t2, mode1);
+    const p1 = pickOfferPlayer(t1, mode2, t2);
+    const p2 = pickOfferPlayer(t2, mode1, t1);
     if (!p1 || !p2 || p1.id === p2.id) return null;
 
-    const v1 = cpuPlayerValue(p1), v2 = cpuPlayerValue(p2);
+    // Fit-adjusted: p1 going to t2 (value from t2's perspective), p2 going to t1 (value from t1's perspective)
+    const v1 = cpuPlayerValueFor(p1, t2), v2 = cpuPlayerValueFor(p2, t1);
     const gap = v1 - v2, avgVal = (v1 + v2) / 2;
     if (avgVal === 0) return null;
 
@@ -862,14 +2050,16 @@ function cpuDeal_PlayerSwap(t1, t2, mode1, mode2, g) {
 function cpuDeal_TwoForOne(t1, t2, mode1, mode2, g) {
     const tryOrder = (giver2, receiver1) => {
         if (giver2.roster.length < 8 || receiver1.roster.length < 2) return null;
-        const star = pickOfferPlayer(receiver1, getTeamMode(giver2, g));
+        const star = pickOfferPlayer(receiver1, getTeamMode(giver2, g), giver2);
         if (!star) return null;
-        const starVal = cpuPlayerValue(star);
+        // Star is going to giver2 — value from giver2's perspective
+        const starVal = cpuPlayerValueFor(star, giver2);
         if (starVal < 70) return null;
 
+        // The 2 players from giver2 go to receiver1 — value from receiver1's perspective
         const candidates = [...giver2.roster]
             .filter(p => p.id !== star.id)
-            .map(p => ({ p, v: cpuPlayerValue(p) }))
+            .map(p => ({ p, v: cpuPlayerValueFor(p, receiver1) }))
             .sort((a, b) => b.v - a.v);
 
         for (let i = 0; i < Math.min(candidates.length - 1, 5); i++) {
@@ -906,7 +2096,8 @@ function cpuDeal_PlayerForPicks(t1, t2, mode1, mode2, g) {
             .sort((a, b) => b.ovr - a.ovr);
         if (!dumpable.length) return null;
         const dumpPlayer = dumpable[Math.floor(Math.random() * Math.min(dumpable.length, 3))];
-        const pVal = cpuPlayerValue(dumpPlayer);
+        // Player going from seller to buyer — value from buyer's perspective
+        const pVal = cpuPlayerValueFor(dumpPlayer, buyer);
         if (pVal < 50) return null;
         const picks = _gatherPicks(buyer, pVal * 0.75, 3, g);
         if (!picks || !picks.length) return null;
@@ -934,17 +2125,18 @@ function cpuDeal_BuyLow(t1, t2, mode1, mode2, g) {
             .sort((a, b) => b.ovr - a.ovr);
         if (!targets.length) return null;
         const target = targets[0];
-        // Value the player at a 20% discount due to unhappiness
-        const pVal = cpuPlayerValue(target) * 0.80;
+        // Target going from seller to buyer — value from buyer's perspective, then 20% discount for unhappiness
+        const pVal = cpuPlayerValueFor(target, buyer) * 0.80;
         if (pVal < 60) return null;
 
         const isSafe = (p) => seller.roster.filter(x => x.pos === p.pos && x.id !== p.id).length >= 1;
         if (!isSafe(target)) return null;
 
         // Buyer offers a player + picks for the discounted target
-        const offerPlayer = pickOfferPlayer(buyer, getTeamMode(seller, g));
+        const offerPlayer = pickOfferPlayer(buyer, getTeamMode(seller, g), seller);
         if (!offerPlayer) return null;
-        const offerVal = cpuPlayerValue(offerPlayer);
+        // offerPlayer going from buyer to seller — value from seller's perspective
+        const offerVal = cpuPlayerValueFor(offerPlayer, seller);
         const gap = pVal - offerVal;
         let extraPicks = [];
         if (gap > 30) {
@@ -1086,6 +2278,27 @@ export function executeTrade(userTeamId, otherTeamId, userAssets, otherAssets){
     autoDistributeMinutes(otherTeam);
     updateTeamRating(userTeam);
     updateTeamRating(otherTeam);
+
+    // Track user-involved trades for reputation purposes + mandate progress
+    const actualUserTeamId = g.league.teams[g.userTeamIndex]?.id;
+    const userInTrade = userTeamId === actualUserTeamId || otherTeamId === actualUserTeamId;
+    if (userInTrade && g.gm) {
+        g.gm.career.tradesExecuted = (g.gm.career.tradesExecuted || 0) + 1;
+
+        // Determine which side the user is on (executeTrade is symmetric — caller can pass either order)
+        const isUserA = userTeamId === actualUserTeamId;
+        const userSent = isUserA ? userAssets.players : otherAssets.players;
+        const userReceived = isUserA ? otherAssets.players : userAssets.players;
+
+        const mandate = g.gm.activeMandate;
+        if (mandate) {
+            if (mandate.type === "trade_acquire" && userReceived.some(p => p.ovr >= (mandate.target || 78))) {
+                mandate.acquired = true;
+            } else if (mandate.type === "protect_star" && userSent.some(p => p.id === mandate.targetPlayerId)) {
+                mandate.violated = true;
+            }
+        }
+    }
 
     autoSave();
     return true;
@@ -1236,8 +2449,14 @@ export function advanceWeek(){
               simCpuTrades(g, g.week);
               simCpuTrades(g, g.week);
           }
+          // CPU teams may send the user a trade offer this week (throttled internally)
+          simCpuOffersToUser(g, g.week);
       }
-      if (g.week === 5) simCpuExtensions(g);
+      // Extensions happen at multiple checkpoints — early-season (week 5) and mid-season (week 14)
+      // so teams can react to evolving cap situations and roster context, not just one snapshot.
+      if (g.week === 5 || g.week === 14) simCpuExtensions(g);
+      // Owner may issue a mid-season mandate at week 5 (only one per season)
+      if (g.week === 5) generateMandate(g);
       expireIntlFoundProspects(g);
 
       // Trade deadline buzz notifications
@@ -1302,6 +2521,52 @@ function shuffle(a){
   }
 }
 
+// Derive a specific reason for a trade demand based on the player's context.
+// Returns a short string describing the dominant grievance; falls back to a generic line.
+function deriveTradeDemandReason(p, team, g) {
+    const mins = p.rotation?.minutes ?? 0;
+
+    // 1. Buried behind a younger teammate at same position who gets more minutes
+    const youngerStealing = team.roster.find(r =>
+        r.id !== p.id && r.pos === p.pos && r.age < p.age - 1 &&
+        (r.rotation?.minutes ?? 0) > mins + 4
+    );
+    if (youngerStealing) {
+        return `losing minutes to ${youngerStealing.name} (${youngerStealing.age}yo ${youngerStealing.pos})`;
+    }
+
+    // 2. Behind a clearly better star at same position
+    const starAhead = team.roster.find(r =>
+        r.id !== p.id && r.pos === p.pos && r.ovr >= p.ovr + 6 &&
+        (r.rotation?.minutes ?? 0) > mins
+    );
+    if (starAhead) {
+        return `stuck behind ${starAhead.name} (OVR ${starAhead.ovr})`;
+    }
+
+    // 3. Almost no role
+    if (mins > 0 && mins < 14) {
+        return `frustrated with limited minutes (${mins}/game)`;
+    }
+    if (mins === 0) {
+        return `not in the rotation at all`;
+    }
+
+    // 4. Team is losing
+    const games = (team.wins || 0) + (team.losses || 0);
+    if (games >= 6 && team.losses > team.wins + 4) {
+        return `tired of losing (${team.wins}-${team.losses})`;
+    }
+
+    // 5. Veteran on a rebuild
+    if (p.age >= 30 && getTeamMode(team, g) === "rebuilding") {
+        return `veteran wants a contender (team is rebuilding)`;
+    }
+
+    // 6. Generic
+    return `wants a fresh start`;
+}
+
 function checkTradeDemands(g) {
     if (g.tradeDemandChecked) return;
     if (g.week < 8) return; // give players time to settle in
@@ -1317,11 +2582,13 @@ function checkTradeDemands(g) {
             if (p.tradeDemand) continue; // already demanding
 
             p.tradeDemand = true;
+            const reason = deriveTradeDemandReason(p, team, g);
+            p.tradeDemandReason = reason;
 
             if (team.id === userTeamId) {
-                g.inbox.unshift({ t: Date.now(), msg: `TRADE DEMAND: ${p.name} (OVR ${p.ovr}) is unhappy and wants out! Consider trading him or improving team morale.` });
+                g.inbox.unshift({ t: Date.now(), msg: `TRADE DEMAND: ${p.name} (OVR ${p.ovr}) wants out — ${reason}.` });
             } else {
-                g.inbox.unshift({ t: Date.now(), msg: `TRADE DEMAND: ${p.name} (${team.name}, OVR ${p.ovr}) has requested a trade.` });
+                g.inbox.unshift({ t: Date.now(), msg: `TRADE DEMAND: ${p.name} (${team.name}, OVR ${p.ovr}) — ${reason}.` });
             }
         }
     }
@@ -1333,6 +2600,9 @@ function simWeekGames(g){
   if (!bundle) return;
 
   const userTeamId = g.league.teams[g.userTeamIndex].id;
+
+  // Track biggest blowout this week for "around the league" recap
+  let weeklyTopBlowout = null;
 
   for (const [aId, bId] of bundle.games){
     const A = g.league.teams.find(t => t.id === aId);
@@ -1377,13 +2647,57 @@ function simWeekGames(g){
         const userWon = (A.id === userTeamId && aWin) || (B.id === userTeamId && !aWin);
         const opponent = A.id === userTeamId ? B : A;
         const scoreStr = `${Math.max(finalScoreA, finalScoreB)}-${Math.min(finalScoreA, finalScoreB)}`;
-        
-        g.inbox.unshift({ 
-            t: Date.now(), 
-            msg: `Week ${g.week}: ${userWon ? "WON" : "LOST"} vs ${opponent.name} (${scoreStr})` 
+
+        g.inbox.unshift({
+            t: Date.now(),
+            msg: `Week ${g.week}: ${userWon ? "WON" : "LOST"} vs ${opponent.name} (${scoreStr})`
         });
     }
+
+    // Track the largest margin of the week (skip user games — those already have their own line)
+    const margin = Math.abs(finalScoreA - finalScoreB);
+    if (A.id !== userTeamId && B.id !== userTeamId &&
+        margin >= 15 && (!weeklyTopBlowout || margin > weeklyTopBlowout.margin)) {
+        weeklyTopBlowout = {
+            margin,
+            winner: aWin ? A.name : B.name,
+            loser: aWin ? B.name : A.name,
+            score: `${Math.max(finalScoreA, finalScoreB)}-${Math.min(finalScoreA, finalScoreB)}`
+        };
+    }
   }
+
+  // Around-the-league spotlight — best individual game performance + biggest blowout
+  postAroundTheLeague(g, weeklyTopBlowout);
+}
+
+// Emit a 1-2 line "around the league" inbox entry summarizing the week's headline performance.
+// Reads p.lastGamePts which is set during calcTeamPerformance for each player that played this week.
+function postAroundTheLeague(g, blowout) {
+    const userTeamId = g.league.teams[g.userTeamIndex].id;
+    let topScorer = null;
+    let topTeamName = "";
+    for (const t of g.league.teams) {
+        for (const p of t.roster) {
+            const pts = p.lastGamePts || 0;
+            if (pts > 0 && (!topScorer || pts > topScorer.pts)) {
+                topScorer = { name: p.name, pts: Math.round(pts), team: t.name, isUser: t.id === userTeamId };
+                topTeamName = t.name;
+            }
+        }
+    }
+
+    const lines = [];
+    if (topScorer && topScorer.pts >= 25) {
+        const tag = topScorer.isUser ? "your" : topScorer.team;
+        lines.push(`${topScorer.name} (${tag}) dropped ${topScorer.pts} this week`);
+    }
+    if (blowout) {
+        lines.push(`${blowout.winner} blew out ${blowout.loser} ${blowout.score}`);
+    }
+    if (!lines.length) return;
+
+    g.inbox.unshift({ t: Date.now(), msg: `AROUND THE LEAGUE: ${lines.join(" · ")}.` });
 }
 
 function calcTeamPerformance(team){
@@ -1397,6 +2711,7 @@ function calcTeamPerformance(team){
     p.def ??= p.ovr;
     p.stats ??= { gp:0, pts:0, reb:0, ast:0 };
     p.rotation ??= { minutes: 0, isStarter: false };
+    p.lastGamePts = 0; // reset before recording this game
 
     const mins = p.rotation.minutes;
     if (mins <= 0) continue;
@@ -1412,6 +2727,7 @@ function calcTeamPerformance(team){
     p.stats.pts += pts;
     p.stats.reb += (p.pos==="C"||p.pos==="PF" ? 0.35 : 0.12) * ptsBase * usage;
     p.stats.ast += (p.pos==="PG" ? 0.4 : 0.1) * ptsBase * usage;
+    p.lastGamePts = pts;
 
     totalOffPoints += pts;
     totalDefSum += (p.def * mins * happinessMult);
@@ -1432,6 +2748,9 @@ function bumpHappiness(team, delta){
 export function startPlayoffs(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
+
+  // Clear any pending CPU-to-user trade offers — trade window is closed in playoffs
+  g.pendingTradeOffers = [];
 
   const east = getConferenceStandings(g, "EAST").slice(0, 8);
   const west = getConferenceStandings(g, "WEST").slice(0, 8);
@@ -1636,6 +2955,8 @@ export function advanceToNextYear(){
   g.phase = PHASES.REGULAR;
   g.hours.available = HOURS_PER_WEEK;
   g.hours.banked = 0;
+  g.pendingTradeOffers = [];
+  g.lastUserOfferWeek = 0;
   
   g.scouting.ncaa = generateNCAAProspects({ year: g.year, count: 100, seed: "ncaa" });
   g.scouting.intlPool = generateInternationalPool({ year: g.year, count: 100, seed: "intl" });
@@ -1676,6 +2997,17 @@ export function advanceToNextYear(){
   g.midseasonFaPool = [];
   g.lastSeasonRecap = null;
 
+  // Reset preseason expectation based on the refreshed roster.
+  // Skip if GM is fired — career is effectively over, no point projecting goals.
+  if (g.gm && g.gm.status === "active") {
+    const userTeam = g.league.teams[g.userTeamIndex];
+    g.gm.expectation = deriveExpectation(userTeam);
+    g.inbox.unshift({
+      t: Date.now(),
+      msg: `OWNER GOAL (${g.year}): ${g.gm.expectation.description} (target: ${g.gm.expectation.winTarget} wins).`
+    });
+  }
+
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
   autoSave();
 }
@@ -1703,6 +3035,10 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
 
   // Capture stats leaders before roster processing clears/resets anything
   const statsLeaders = computeStatsLeaders(g);
+
+  // Snapshot user payroll BEFORE processEndSeasonRoster expires contracts — fair check for cut_payroll mandate
+  const userTeamPreroster = g.league.teams[g.userTeamIndex];
+  const userPayrollSnapshot = userTeamPreroster?.cap?.payroll || 0;
 
   processEndSeasonRoster(g);
 
@@ -1769,8 +3105,57 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
     viewed: false
   };
 
+  // Resolve any active mandate first so its approval delta flows into the review verdict.
+  // We pass the pre-roster-processing payroll snapshot so cut_payroll isn't trivially passed by expirations.
+  resolveMandate(g, { payrollSnapshot: userPayrollSnapshot });
+
+  // Owner reviews the GM. Updates contract / fires / extends and posts a notification.
+  const review = conductAnnualReview(g, userFinish);
+  if (review) {
+    if (review.action === "fired") {
+      g.inbox.unshift({ t: Date.now(), msg: `OWNER REVIEW: You have been fired. ${review.ownerMessage}` });
+    } else {
+      g.inbox.unshift({ t: Date.now(), msg: `OWNER REVIEW: ${review.ownerMessage} See the Year-End Review on the Dashboard.` });
+    }
+  }
+
+  // Job market — other teams may fire their GMs and reach out to the user
+  buildJobMarket(g);
+
   g.inbox.unshift({ t: Date.now(), msg: `Season ${g.year} awards saved to History.` });
   autoSave();
+}
+
+// In-season MVP race — same scoring formula as the end-of-year award.
+// Returns top N candidates with their score, ppg, team, etc. Empty list if no one has played.
+export function computeMVPRace(g, limit = 5) {
+  const all = [];
+  for (const t of g.league.teams) {
+    for (const p of (t.roster || [])) {
+      const gp = p.stats?.gp || 0;
+      if (gp < 3) continue; // need a meaningful sample
+      const ptsPg = p.stats.pts / gp;
+      const astPg = p.stats.ast / gp;
+      const rebPg = p.stats.reb / gp;
+      const winsBoost = (t.wins || 0) * 0.10;
+      const ovrBoost = (p.ovr || 70) * 0.25;
+      const score = ptsPg * 1.15 + astPg * 0.65 + winsBoost + ovrBoost;
+      all.push({
+        playerId: p.id,
+        name: p.name,
+        teamName: t.name,
+        teamId: t.id,
+        pos: p.pos,
+        ovr: p.ovr,
+        ptsPg: Math.round(ptsPg * 10) / 10,
+        astPg: Math.round(astPg * 10) / 10,
+        rebPg: Math.round(rebPg * 10) / 10,
+        score
+      });
+    }
+  }
+  all.sort((a, b) => b.score - a.score);
+  return all.slice(0, limit);
 }
 
 function computeAwards(g){
