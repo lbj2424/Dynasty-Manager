@@ -1,10 +1,7 @@
 import { el, card, button, badge, showPlayerModal } from "../components.js";
-import { getState, advanceToNextYear } from "../../state.js";
+import { getState, advanceToNextYear, SOFT_CAP_LIMIT, ROSTER_MIN_AFTER_CUTS } from "../../state.js";
 import { PHASES, SALARY_CAP, ROSTER_MAX } from "../../data/constants.js";
 import { clamp } from "../../utils.js";
-
-const SOFT_CAP_LIMIT = SALARY_CAP + 20;
-const ROSTER_MIN_AFTER_CUTS = 8;
 
 export function DraftScreen(){
   const s = getState();
@@ -343,9 +340,20 @@ function advancePickCursor(d, g){
 }
 
 function enforcePostDraftRosterRules(g){
+  const userTeamId = g.league?.teams?.[g.userTeamIndex]?.id;
   for (const team of (g.league?.teams || [])){
     const cutPlayers = [];
     recalcTeamPayroll(team);
+
+    if (team.id === userTeamId) {
+      if (team.roster.length > ROSTER_MAX || team.cap.payroll > SOFT_CAP_LIMIT) {
+        g.inbox.unshift({
+          t: Date.now(),
+          msg: `ACTION REQUIRED: You are over roster/payroll limits after the draft (${team.roster.length}/${ROSTER_MAX}, $${team.cap.payroll.toFixed(1)}M / $${SOFT_CAP_LIMIT}M). Cut or trade players before advancing.`
+        });
+      }
+      continue;
+    }
 
     while (team.roster.length > ROSTER_MAX){
       const player = choosePostDraftCut(team);
@@ -390,19 +398,40 @@ function enforcePostDraftRosterRules(g){
 }
 
 function choosePostDraftCut(team){
+  const roster = team.roster || [];
+  const ranked = roster.slice().sort((a,b) => (b.ovr || 0) - (a.ovr || 0));
+  const coreRank = new Map(ranked.map((p, i) => [p.id, i + 1]));
+  const posCounts = {};
+  for (const p of roster) posCounts[p.pos] = (posCounts[p.pos] || 0) + 1;
+
   return (team.roster || [])
     .slice()
-    .sort((a,b) => postDraftCutScore(b) - postDraftCutScore(a))[0];
+    .sort((a,b) => postDraftCutScore(b, coreRank, posCounts) - postDraftCutScore(a, coreRank, posCounts))[0];
 }
 
-function postDraftCutScore(p){
+function postDraftCutScore(p, coreRank, posCounts){
   const salary = p.contract?.salary || 0;
   const ovr = p.ovr || 60;
   const age = p.age || 24;
-  let score = salary * 7 - ovr;
-  if (age >= 32) score += 10;
-  if (age <= 23 && ["A+", "A", "B"].includes(p.potentialGrade)) score -= 18;
-  if (p.rookieYear) score -= 8;
+  const rank = coreRank.get(p.id) || 99;
+  const minutes = p.rotation?.minutes || 0;
+  let score = salary * 7 - ovr * 2;
+
+  if ((posCounts[p.pos] || 0) >= 4) score += 45;
+  else if ((posCounts[p.pos] || 0) >= 3) score += 22;
+  if (minutes > 0 && minutes < 12) score += 18;
+  if (minutes === 0 && rank > 8) score += 28;
+  if (salary >= 8 && ovr < 74) score += 45;
+  if (salary >= 12 && ovr < 78) score += 35;
+  if (age >= 32 && ovr < 78) score += 18;
+
+  if (rank <= 3) score -= 220;
+  else if (rank <= 5) score -= 120;
+  if (ovr >= 88) score -= 260;
+  else if (ovr >= 84) score -= 180;
+  else if (ovr >= 80) score -= 90;
+  if (age <= 24 && ["A+", "A", "B"].includes(p.potentialGrade)) score -= 70;
+  if (p.rookieYear) score -= 30;
   return score;
 }
 

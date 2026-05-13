@@ -43,6 +43,11 @@ export function MidseasonFAScreen() {
             style: "cursor:pointer; text-decoration:underline; color:var(--accent);",
             onclick: () => showPlayerModal(p)
         }, p.name);
+        const source = p.cutByTeamName
+            ? `Cut by ${p.cutByTeamName}`
+            : p.formerTeamName
+            ? `Formerly ${p.formerTeamName}`
+            : "Unsigned";
 
         return el("tr", {}, [
             el("td", {}, nameLink),
@@ -53,6 +58,7 @@ export function MidseasonFAScreen() {
             el("td", {}, String(p.age)),
             el("td", {}, p.potentialGrade),
             el("td", {}, `$${p.ask}M / ${p.yearsAsk}y`),
+            el("td", {}, source),
             el("td", {}, button("Sign", {
                 small: true,
                 onClick: () => showSignModal(p, userTeam, capSpace, g, () => rerender(root))
@@ -62,7 +68,7 @@ export function MidseasonFAScreen() {
 
     root.appendChild(card(
         "Available Free Agents",
-        `Players who went unsigned this offseason. Cap Space: $${capSpace.toFixed(1)}M · Roster: ${userTeam.roster.length}/15`,
+        `Cut and unsigned players available during the regular season. Cap Space: $${capSpace.toFixed(1)}M - Roster: ${userTeam.roster.length}/15`,
         [
             filterBar,
             el("div", { class: "sep" }),
@@ -72,10 +78,10 @@ export function MidseasonFAScreen() {
                     el("thead", {}, el("tr", {}, [
                         el("th", {}, "Player"), el("th", {}, "Pos"), el("th", {}, "OVR"),
                         el("th", {}, "OFF"), el("th", {}, "DEF"), el("th", {}, "Age"),
-                        el("th", {}, "Pot"), el("th", {}, "Ask"), el("th", {}, "")
+                        el("th", {}, "Pot"), el("th", {}, "Ask"), el("th", {}, "Source"), el("th", {}, "")
                     ])),
                     el("tbody", {}, rows.length ? rows : [
-                        el("tr", {}, [el("td", { colspan: "9" }, "No players match filter.")])
+                        el("tr", {}, [el("td", { colspan: "10" }, "No players match filter.")])
                     ])
                 ])
         ]

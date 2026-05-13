@@ -14,7 +14,8 @@ import {
   acceptLoyaltyOffer,
   declineAllPoachingOffers,
   getOwnerInfo,
-  getMandateProgress
+  getMandateProgress,
+  getUserRosterRuleIssue
 } from "../../state.js";
 import { formatWeek } from "../../utils.js";
 import { PHASES, TRADE_DEADLINE_WEEK } from "../../data/constants.js";
@@ -34,7 +35,12 @@ export function DashboardScreen(){
       button("Advance Week", {
         primary: true,
         onClick: () => {
+          const weekBefore = g.week;
           advanceWeek();
+          if (g.week === weekBefore) {
+            const blocked = getUserRosterRuleIssue(g);
+            if (blocked) alert(blocked.message);
+          }
           // NEW: Trigger All-Star announcement at end of regular season
           if (g.week > g.seasonWeeks && g.phase === PHASES.REGULAR) {
               const allStars = calculateAllStars(g);
@@ -136,6 +142,7 @@ export function DashboardScreen(){
     el("div", { class:"row" }, topButtons.filter(Boolean)),
     el("div", { class:"sep" }),
     gmStatusPanel(g, root),
+    rosterRulePanel(g),
     mandatePanel(g),
     jobMarketPanel(g, root),
     pendingOffersPanel(g, root),
@@ -156,6 +163,23 @@ export function DashboardScreen(){
 
 // GM career panel — contract, owner approval, current season expectation, reputations.
 // Fired GMs see a Career Over panel plus any wilderness offers in the job market.
+function rosterRulePanel(g) {
+  const issue = getUserRosterRuleIssue(g);
+  if (!issue) return null;
+  const userTeam = g.league.teams[g.userTeamIndex];
+  return card("Action Required", issue.message, [
+    el("div", { class:"row" }, [
+      badge(`Roster ${userTeam.roster.length}/15`),
+      badge(`Payroll $${userTeam.cap.payroll.toFixed(1)}M`)
+    ]),
+    el("div", { class:"sep" }),
+    el("div", { class:"row" }, [
+      button("Manage Team", { primary:true, onClick: () => location.hash = "#/team" }),
+      button("Trade", { onClick: () => location.hash = "#/trade" })
+    ])
+  ]);
+}
+
 function gmStatusPanel(g, root) {
     const gm = g.gm;
     if (!gm) return null;

@@ -15,6 +15,8 @@ import { clamp, id, rng, seedFromString } from "./utils.js";
 
 const KEY_ACTIVE = "dynasty_active_slot";
 const KEY_SAVE_PREFIX = "dynasty_save_";
+export const SOFT_CAP_LIMIT = SALARY_CAP + 20;
+export const ROSTER_MIN_AFTER_CUTS = 8;
 
 let STATE = null;
 
@@ -55,6 +57,16 @@ export function ensureAppState(loadedOrNull){
 
     STATE.game.tradeDemandChecked ??= false;
     STATE.game.midseasonFaPool ??= [];
+    if (STATE.game.phase === PHASES.REGULAR && STATE.game.offseason?.freeAgents?.pool?.length) {
+      const existingIds = new Set(STATE.game.midseasonFaPool.map(p => p.id));
+      for (const p of STATE.game.offseason.freeAgents.pool) {
+        if (!p.signedByTeamId && !existingIds.has(p.id)) {
+          STATE.game.midseasonFaPool.push({ ...p, offers: [] });
+          existingIds.add(p.id);
+        }
+      }
+      STATE.game.midseasonFaPool.sort((a,b) => b.ovr - a.ovr);
+    }
     STATE.game.lastSeasonRecap ??= null;
     STATE.game.pendingTradeOffers ??= [];
     STATE.game.lastUserOfferWeek ??= 0;
@@ -3116,19 +3128,21 @@ export function releasePlayer(teamId, playerId){
         ask: Number((fairValue * greed * prestigeMult).toFixed(2)),
         yearsAsk: Math.max(1, Math.min(3, Math.floor(Math.random() * 3) + 1)),
         signedByTeamId: null,
+        cutByTeamId: team.id,
+        cutByTeamName: team.name,
         contract: null,
         offers: []
     };
 
-    if (g.offseason.freeAgents?.pool) {
+    if (g.phase === PHASES.FREE_AGENCY && g.offseason.freeAgents?.pool) {
         // FA phase: drop into pool and generate CPU offers immediately
         g.offseason.freeAgents.pool.push(faEntry);
         g.offseason.freeAgents.pool.sort((a, b) => b.ovr - a.ovr);
         const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
         const teamNeeds = buildTeamNeeds(cpuTeams);
         generateOffersForPlayer(g, faEntry, cpuTeams, teamNeeds);
-    } else if (g.phase === PHASES.REGULAR) {
-        // Regular season: add to midseason FA pool so user can browse and sign
+    } else if (g.phase === PHASES.REGULAR || g.phase === PHASES.DRAFT) {
+        // Regular-season and post-draft cuts are available once the season begins.
         g.midseasonFaPool ??= [];
         g.midseasonFaPool.push(faEntry);
         g.midseasonFaPool.sort((a, b) => b.ovr - a.ovr);
@@ -3229,6 +3243,12 @@ export function isTradeWindowOpen(){
 export function advanceWeek(){
   const g = STATE.game;
   if (g.phase !== PHASES.REGULAR) return;
+  const capIssue = getUserRosterRuleIssue(g);
+  if (capIssue) {
+      g.inbox.unshift({ t: Date.now(), msg: capIssue.message });
+      autoSave();
+      return;
+  }
   
   // NOTE: If week is > seasonWeeks, we shouldn't sim games. 
   // It means we are at the "End of Season" checkpoint waiting for user to start playoffs.
@@ -3820,6 +3840,28 @@ export function startDraft(){
   autoSave();
 }
 
+export function getUserRosterRuleIssue(g = STATE.game) {
+    const userTeam = g?.league?.teams?.[g.userTeamIndex];
+    if (!userTeam) return null;
+    recalcPayroll(userTeam);
+
+    if ((userTeam.roster?.length || 0) > ROSTER_MAX) {
+        return {
+            type: "roster_max",
+            message: `ROSTER LIMIT: You have ${userTeam.roster.length}/${ROSTER_MAX} players. Cut or trade a player before advancing.`
+        };
+    }
+
+    if ((userTeam.cap?.payroll || 0) > SOFT_CAP_LIMIT) {
+        return {
+            type: "soft_cap",
+            message: `PAYROLL LIMIT: You are at $${userTeam.cap.payroll.toFixed(1)}M. Get under the $${SOFT_CAP_LIMIT}M soft cap before advancing.`
+        };
+    }
+
+    return null;
+}
+
 function normalizeInternationalDraftFlags(g){
   for (const p of (g.scouting?.intlPool || [])){
     if (p.declared && !p.visibility){
@@ -3880,6 +3922,16 @@ function findPickOwner(g, originalOwnerId, year, round){
 
 export function advanceToNextYear(){
   const g = STATE.game;
+  const carriedAvailablePlayers = new Map();
+  for (const p of (g.midseasonFaPool || [])) {
+    if (!p.signedByTeamId) carriedAvailablePlayers.set(p.id, { ...p, offers: [] });
+  }
+  for (const p of (g.offseason.freeAgents?.pool || [])) {
+    if (!p.signedByTeamId && !carriedAvailablePlayers.has(p.id)) {
+      carriedAvailablePlayers.set(p.id, { ...p, offers: [] });
+    }
+  }
+
   g.year += 1;
   g.week = 1;
   g.phase = PHASES.REGULAR;
@@ -3924,7 +3976,7 @@ export function advanceToNextYear(){
   g.offseason.expiring = [];
   g.tradeDemandChecked = false;
   g.cpuSeasonTradeCount = 0;
-  g.midseasonFaPool = [];
+  g.midseasonFaPool = [...carriedAvailablePlayers.values()].sort((a, b) => b.ovr - a.ovr);
   g.lastSeasonRecap = null;
 
   // Reset preseason expectation based on the refreshed roster.
@@ -3939,6 +3991,10 @@ export function advanceToNextYear(){
   }
 
   g.inbox.unshift({ t: Date.now(), msg: `New season started. Year ${g.year}.` });
+  const rosterIssue = getUserRosterRuleIssue(g);
+  if (rosterIssue) {
+    g.inbox.unshift({ t: Date.now(), msg: rosterIssue.message });
+  }
   autoSave();
 }
 

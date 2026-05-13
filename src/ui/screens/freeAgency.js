@@ -15,7 +15,10 @@ export function FreeAgencyScreen(){
 
   if (g.phase !== PHASES.FREE_AGENCY){
     root.appendChild(card("Free Agency", "Not currently active.", [
-      el("div", { class:"p" }, "Wait for the offseason.")
+      el("div", { class:"p" }, "Offseason free agency happens before the draft. During the regular season, cut and unsigned players are listed under Available Players."),
+      g.phase === PHASES.REGULAR
+        ? button("Go to Available Players", { primary:true, onClick: () => location.hash = "#/available-players" })
+        : null
     ]));
     return root;
   }
