@@ -157,7 +157,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
     }
   }
 
-  const schedule = generateWeeklySchedule(league.teams.map(t => t.id), SEASON_WEEKS, 4);
+  const schedule = generateWeeklySchedule(league.teams, SEASON_WEEKS);
 
   // Phase 3: assign owner archetypes to every team
   assignOwners(league.teams);
@@ -3229,20 +3229,98 @@ function expireIntlFoundProspects(g){
   g.scouting.intlFoundWeekById = found;
 }
 
-function generateWeeklySchedule(teamIds, weeks){
+function generateWeeklySchedule(teamsOrIds, weeks){
+  const teams = teamsOrIds.map(t => typeof t === "string"
+    ? { id: t, conference: null }
+    : { id: t.id, conference: t.conference || null }
+  );
+  const ids = teams.map(t => t.id);
+  const homeCounts = Object.fromEntries(ids.map(id => [id, 0]));
+  const rounds = [];
+
+  const shuffledIds = ids.slice();
+  shuffle(shuffledIds);
+  const allRounds = makeRoundRobinRounds(shuffledIds);
+  rounds.push(...allRounds);
+
+  const byConference = new Map();
+  for (const t of teams){
+    const key = t.conference || "LEAGUE";
+    if (!byConference.has(key)) byConference.set(key, []);
+    byConference.get(key).push(t.id);
+  }
+
+  const extraRoundsNeeded = Math.max(0, (weeks * 2) - rounds.length);
+  const confRoundSets = [...byConference.values()].map(confIds => {
+    const shuffledConfIds = confIds.slice();
+    shuffle(shuffledConfIds);
+    return makeRoundRobinRoundsWithByes(shuffledConfIds);
+  });
+  for (let r=0; r<extraRoundsNeeded; r++){
+    const combined = [];
+    for (const confRounds of confRoundSets){
+      const confRound = confRounds[r % Math.max(1, confRounds.length)];
+      combined.push(...(confRound?.games || []));
+    }
+    const byes = [];
+    for (const confRounds of confRoundSets){
+      const confRound = confRounds[r % Math.max(1, confRounds.length)];
+      byes.push(...(confRound?.byes || []));
+    }
+    shuffle(byes);
+    for (let i=0; i<byes.length-1; i+=2){
+      combined.push([byes[i], byes[i+1]]);
+    }
+    rounds.push(combined);
+  }
+
+  const scheduledRounds = rounds.slice(0, weeks * 2).map(round =>
+    round.map(([aId, bId]) => assignHomeAway(aId, bId, homeCounts))
+  );
+
   const schedule = [];
   for (let w=1; w<=weeks; w++){
-    const games = [];
-    for (let pass=0; pass<2; pass++){
-      const ids = teamIds.slice();
-      shuffle(ids);
-      for (let i=0;i<ids.length;i+=2){
-        games.push([ids[i], ids[i+1]]);
-      }
-    }
+    const games = [
+      ...(scheduledRounds[(w - 1) * 2] || []),
+      ...(scheduledRounds[(w - 1) * 2 + 1] || [])
+    ];
     schedule.push({ week:w, games });
   }
   return schedule;
+}
+
+function makeRoundRobinRounds(ids){
+  return makeRoundRobinRoundsWithByes(ids).map(r => r.games);
+}
+
+function makeRoundRobinRoundsWithByes(ids){
+  const list = ids.slice();
+  if (list.length % 2 === 1) list.push(null);
+  const rounds = [];
+  const n = list.length;
+  for (let r=0; r<n-1; r++){
+    const games = [];
+    const byes = [];
+    for (let i=0; i<n/2; i++){
+      const a = list[i];
+      const b = list[n - 1 - i];
+      if (a && b) games.push([a, b]);
+      else if (a || b) byes.push(a || b);
+    }
+    rounds.push({ games, byes });
+    list.splice(1, 0, list.pop());
+  }
+  return rounds;
+}
+
+function assignHomeAway(aId, bId, homeCounts){
+  const aHomeNeed = homeCounts[aId] || 0;
+  const bHomeNeed = homeCounts[bId] || 0;
+  const aIsHome = aHomeNeed < bHomeNeed || (aHomeNeed === bHomeNeed && Math.random() < 0.5);
+  const homeId = aIsHome ? aId : bId;
+  const awayId = aIsHome ? bId : aId;
+  homeCounts[homeId] = (homeCounts[homeId] || 0) + 1;
+  return { homeId, awayId };
 }
 
 function shuffle(a){
@@ -3335,7 +3413,10 @@ function simWeekGames(g){
   // Track biggest blowout this week for "around the league" recap
   let weeklyTopBlowout = null;
 
-  for (const [aId, bId] of bundle.games){
+  for (const game of bundle.games){
+    const hasStoredVenue = !!game.homeId;
+    const aId = game.homeId || game[0];
+    const bId = game.awayId || game[1];
     const A = g.league.teams.find(t => t.id === aId);
     const B = g.league.teams.find(t => t.id === bId);
     if (!A || !B) continue;
@@ -3346,7 +3427,7 @@ function simWeekGames(g){
     const varA = 0.9 + Math.random() * 0.2;
     const varB = 0.9 + Math.random() * 0.2;
     const homeBoost = 1.05;
-    const aIsHome = Math.random() < 0.5;
+    const aIsHome = hasStoredVenue ? true : Math.random() < 0.5;
 
     let pointsA = statsA.offPoints * varA * (aIsHome ? homeBoost : 1.0);
     let pointsB = statsB.offPoints * varB * (aIsHome ? 1.0 : homeBoost);
@@ -3377,11 +3458,15 @@ function simWeekGames(g){
     if (A.id === userTeamId || B.id === userTeamId) {
         const userWon = (A.id === userTeamId && aWin) || (B.id === userTeamId && !aWin);
         const opponent = A.id === userTeamId ? B : A;
-        const scoreStr = `${Math.max(finalScoreA, finalScoreB)}-${Math.min(finalScoreA, finalScoreB)}`;
+        const userScore = A.id === userTeamId ? finalScoreA : finalScoreB;
+        const opponentScore = A.id === userTeamId ? finalScoreB : finalScoreA;
+        const scoreStr = `${userScore}-${opponentScore}`;
+        const userIsHome = A.id === userTeamId ? aIsHome : !aIsHome;
+        const venue = userIsHome ? "vs" : "at";
 
         g.inbox.unshift({
             t: Date.now(),
-            msg: `Week ${g.week}: ${userWon ? "WON" : "LOST"} vs ${opponent.name} (${scoreStr})`
+            msg: `Week ${g.week}: ${userWon ? "WON" : "LOST"} ${venue} ${opponent.name} (${scoreStr})`
         });
     }
 
@@ -3769,7 +3854,7 @@ export function advanceToNextYear(){
   }
   g.tradeDemandChecked = false;
 
-  g.schedule = generateWeeklySchedule(g.league.teams.map(t => t.id), SEASON_WEEKS);
+  g.schedule = generateWeeklySchedule(g.league.teams, SEASON_WEEKS);
   g.playoffs = null;
   g.offseason.freeAgents = null;
   g.offseason.draft = null;

@@ -1,7 +1,10 @@
 import { el, card, button, badge, showPlayerModal } from "../components.js";
 import { getState, advanceToNextYear } from "../../state.js";
-import { PHASES } from "../../data/constants.js";
+import { PHASES, SALARY_CAP, ROSTER_MAX } from "../../data/constants.js";
 import { clamp } from "../../utils.js";
+
+const SOFT_CAP_LIMIT = SALARY_CAP + 20;
+const ROSTER_MIN_AFTER_CUTS = 8;
 
 export function DraftScreen(){
   const s = getState();
@@ -335,7 +338,77 @@ function advancePickCursor(d, g){
   if (d.round > 2){
     d.done = true;
     cleanupUndraftedPrivateCommits(d, g);
+    enforcePostDraftRosterRules(g);
   }
+}
+
+function enforcePostDraftRosterRules(g){
+  for (const team of (g.league?.teams || [])){
+    const cutPlayers = [];
+    recalcTeamPayroll(team);
+
+    while (team.roster.length > ROSTER_MAX){
+      const player = choosePostDraftCut(team);
+      if (!player) break;
+      cutPlayers.push(player);
+      team.roster = team.roster.filter(p => p.id !== player.id);
+      recalcTeamPayroll(team);
+    }
+
+    while (team.cap.payroll > SOFT_CAP_LIMIT && team.roster.length > ROSTER_MIN_AFTER_CUTS){
+      const player = choosePostDraftCut(team);
+      if (!player) break;
+      cutPlayers.push(player);
+      team.roster = team.roster.filter(p => p.id !== player.id);
+      recalcTeamPayroll(team);
+    }
+
+    if (cutPlayers.length){
+      g.midseasonFaPool ??= [];
+      for (const p of cutPlayers){
+        g.midseasonFaPool.push({
+          ...p,
+          offers: [],
+          signedByTeamId: null,
+          cutByTeamId: team.id,
+          cutByTeamName: team.name
+        });
+      }
+      g.inbox.unshift({
+        t: Date.now(),
+        msg: `${team.name} cut ${cutPlayers.length} player(s) after the draft to meet roster/payroll rules. Payroll: $${team.cap.payroll.toFixed(1)}M.`
+      });
+    }
+
+    if (team.cap.payroll > SOFT_CAP_LIMIT){
+      g.inbox.unshift({
+        t: Date.now(),
+        msg: `${team.name} remains over the $${SOFT_CAP_LIMIT}M soft cap because it cannot cut below ${ROSTER_MIN_AFTER_CUTS} players.`
+      });
+    }
+  }
+}
+
+function choosePostDraftCut(team){
+  return (team.roster || [])
+    .slice()
+    .sort((a,b) => postDraftCutScore(b) - postDraftCutScore(a))[0];
+}
+
+function postDraftCutScore(p){
+  const salary = p.contract?.salary || 0;
+  const ovr = p.ovr || 60;
+  const age = p.age || 24;
+  let score = salary * 7 - ovr;
+  if (age >= 32) score += 10;
+  if (age <= 23 && ["A+", "A", "B"].includes(p.potentialGrade)) score -= 18;
+  if (p.rookieYear) score -= 8;
+  return score;
+}
+
+function recalcTeamPayroll(team){
+  team.cap ??= { cap: SALARY_CAP, payroll: 0 };
+  team.cap.payroll = Number((team.roster || []).reduce((sum,p) => sum + (p.contract?.salary || 0), 0).toFixed(1));
 }
 
 function rerender(root){

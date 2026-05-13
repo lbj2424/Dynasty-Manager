@@ -139,6 +139,7 @@ export function DashboardScreen(){
     mandatePanel(g),
     jobMarketPanel(g, root),
     pendingOffersPanel(g, root),
+    schedulePanel(g),
     mvpRacePanel(g),
     el("div", {}, [
       el("div", { class:"h2" }, "Inbox"),
@@ -502,7 +503,68 @@ function jobMarketPanel(g, root) {
                 rerender(root);
             }
         })
-    ]);
+  ]);
+}
+
+function schedulePanel(g) {
+  if (g.phase !== PHASES.REGULAR) return null;
+  const userTeam = g.league.teams[g.userTeamIndex];
+  if (!userTeam) return null;
+
+  const remaining = [];
+  for (const week of (g.schedule || [])) {
+    if (week.week < g.week) continue;
+    for (const game of (week.games || [])) {
+      const homeId = game.homeId || game[0];
+      const awayId = game.awayId || game[1];
+      if (homeId !== userTeam.id && awayId !== userTeam.id) continue;
+
+      const opponentId = homeId === userTeam.id ? awayId : homeId;
+      const opponent = g.league.teams.find(t => t.id === opponentId);
+      if (!opponent) continue;
+      remaining.push({
+        week: week.week,
+        opponent,
+        isHome: homeId === userTeam.id,
+        hasStoredVenue: !!game.homeId
+      });
+    }
+  }
+
+  const nextGames = remaining.slice(0, 5);
+  const opponentGames = remaining
+    .map(x => (x.opponent.wins || 0) + (x.opponent.losses || 0))
+    .filter(Boolean);
+  const oppWinPct = opponentGames.length
+    ? remaining.reduce((sum, x) => {
+        const games = (x.opponent.wins || 0) + (x.opponent.losses || 0);
+        return sum + (games ? (x.opponent.wins || 0) / games : 0);
+      }, 0) / Math.max(1, remaining.filter(x => (x.opponent.wins || 0) + (x.opponent.losses || 0) > 0).length)
+    : null;
+
+  return card("Upcoming Schedule", "Home and away games are now part of the season schedule.", [
+    el("div", { class:"row" }, [
+      badge(`${remaining.length} games remaining`),
+      oppWinPct !== null ? badge(`Opp win% ${(oppWinPct * 100).toFixed(1)}`) : null
+    ].filter(Boolean)),
+    el("div", { class:"sep" }),
+    el("table", { class:"table" }, [
+      el("thead", {}, el("tr", {}, [
+        el("th", {}, "Week"),
+        el("th", {}, "Venue"),
+        el("th", {}, "Opponent"),
+        el("th", {}, "Record")
+      ])),
+      el("tbody", {}, nextGames.length ? nextGames.map(x => el("tr", {}, [
+        el("td", {}, String(x.week)),
+        el("td", {}, x.hasStoredVenue ? (x.isHome ? "Home" : "Away") : "TBD"),
+        el("td", {}, x.opponent.name),
+        el("td", {}, `${x.opponent.wins || 0}-${x.opponent.losses || 0}`)
+      ])) : [
+        el("tr", {}, [el("td", { colspan:"4" }, "No regular season games remaining.")])
+      ])
+    ])
+  ]);
 }
 
 // Year-End owner review modal. One of: big_extension | extension | hot_seat | lame_duck | warning | status_quo | fired.
