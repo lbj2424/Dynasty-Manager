@@ -116,6 +116,7 @@ export function ensureAppState(loadedOrNull){
             }] : [];
         }
     }
+    normalizeCurrentOwnerGoal(STATE.game);
     return;
   }
   STATE = newGameState({ userTeamIndex: 0 });
@@ -765,11 +766,113 @@ function latestReviewForExpectation(g) {
     return history.length ? history[history.length - 1] : null;
 }
 
+function latestTeamRecord(g, teamId) {
+    const seasons = g?.history || [];
+    for (let i = seasons.length - 1; i >= 0; i--) {
+        const row = (seasons[i].allTeamRecords || []).find(t => t.id === teamId);
+        if (row) return row;
+    }
+    return null;
+}
+
+function activeStintYears(g, teamId) {
+    const history = g?.gm?.career?.teamsHistory || [];
+    const stint = [...history].reverse().find(s => s.teamId === teamId);
+    return stint?.yearsWithTeam || 0;
+}
+
+function rosterIsDevelopmental(team) {
+    const core = (team?.roster || [])
+        .slice()
+        .sort((a,b) => (b.ovr || 0) - (a.ovr || 0))
+        .slice(0, 8);
+    if (!core.length) return false;
+
+    const avgAge = core.reduce((sum,p) => sum + (p.age || 24), 0) / core.length;
+    const upsideCount = core.filter(p => ["A+", "A", "B"].includes(p.potentialGrade)).length;
+    return avgAge <= 24.5 || upsideCount >= 4;
+}
+
+function expectationCapFromRecentPerformance(team, g, level, owner) {
+    const record = latestTeamRecord(g, team?.id);
+    if (!record) return { level, note: "" };
+
+    let cap = 3;
+    let note = "";
+    const wins = record.wins || 0;
+    const madePlayoffs = !!record.madePlayoffs;
+    const stintYears = activeStintYears(g, team?.id);
+    const developmental = rosterIsDevelopmental(team);
+
+    if (wins < 12) {
+        cap = owner.key === "win_now_zealot" && (team?.rating || 70) >= 80 ? 1 : 0;
+        note = " after last season's rough record";
+    } else if (wins < 18) {
+        cap = 1;
+        note = " after last season's losing record";
+    } else if (!madePlayoffs || wins < 24) {
+        cap = 1;
+        note = " after missing the playoffs last season";
+    } else if (madePlayoffs && wins < 30) {
+        cap = 2;
+        note = " after last season's playoff step";
+    }
+
+    if (stintYears < 2 && wins < 18) {
+        cap = Math.min(cap, developmental ? 0 : 1);
+        note = developmental
+            ? " while your young core develops"
+            : " while you stabilize the rebuild";
+    }
+
+    if (owner.key === "patient_rebuilder" && wins < 24) {
+        cap = Math.min(cap, 0);
+        note = " with a patient rebuild mandate";
+    }
+
+    if (level > cap) {
+        return { level: cap, note };
+    }
+    return { level, note: "" };
+}
+
+function tuneExpectationWinTarget(base, team, g, owner) {
+    const record = latestTeamRecord(g, team?.id);
+    if (!record) {
+        base.winTarget = clamp(base.winTarget + (owner.winTargetDelta || 0), 8, 38);
+        if (base.type === "rebuild") base.winTarget = Math.min(base.winTarget, 18);
+        if (base.type === "playoffs") base.winTarget = Math.min(base.winTarget, 26);
+        if (base.type === "contender") base.winTarget = Math.min(base.winTarget, 32);
+        return base;
+    }
+
+    const wins = record.wins || 0;
+    if (base.type === "rebuild") {
+        base.winTarget = clamp(Math.max(10, wins + 4), 8, 18);
+    } else if (base.type === "playoffs" && wins < 18) {
+        base.winTarget = clamp(wins + 8, 14, 24);
+    } else if (base.type === "playoffs" && wins < 24) {
+        base.winTarget = clamp(wins + 5, 18, 26);
+    } else if (base.type === "contender" && wins < 30) {
+        base.winTarget = clamp(wins + 5, 24, 30);
+    }
+
+    base.winTarget = clamp(base.winTarget + (owner.winTargetDelta || 0), 8, 38);
+    if (base.type === "rebuild") base.winTarget = Math.min(base.winTarget, 18);
+    if (base.type === "playoffs") base.winTarget = Math.min(base.winTarget, 26);
+    if (base.type === "contender") base.winTarget = Math.min(base.winTarget, 32);
+    return base;
+}
+
 function deriveAdjustedExpectation(team, g = null) {
     const r = team?.rating ?? 70;
     const owner = ownerConfig(team);
     let level = expectationLevelFromRating(r);
     let contextNote = "";
+
+    const perf = expectationCapFromRecentPerformance(team, g, level, owner);
+    level = perf.level;
+    contextNote = perf.note;
 
     const review = latestReviewForExpectation(g);
     const approval = g?.gm?.ownerApproval ?? 70;
@@ -807,11 +910,11 @@ function deriveAdjustedExpectation(team, g = null) {
         }
     }
 
-    const base = expectationFromLevel(level);
-    base.winTarget = clamp(base.winTarget + (owner.winTargetDelta || 0), 8, 38);
+    const base = tuneExpectationWinTarget(expectationFromLevel(level), team, g, owner);
 
     if (owner.key === "win_now_zealot" && base.type !== "title") {
-        base.description = base.type === "contender" ? "Reach the conference finals" : "Make the playoffs";
+        if (base.type === "contender") base.description = "Reach the conference finals";
+        else if (base.type === "playoffs") base.description = "Make the playoffs";
         base.description += " (owner still wants urgency)";
     } else if (owner.key === "patient_rebuilder" && base.type !== "rebuild") {
         base.description = base.description + " (owner is patient - sustainable growth matters)";
@@ -823,6 +926,27 @@ function deriveAdjustedExpectation(team, g = null) {
     base.ratingLevel = expectationLevelFromRating(r);
     base.adjustedLevel = level;
     return base;
+}
+
+function normalizeCurrentOwnerGoal(g) {
+    if (!g?.gm || g.gm.status !== "active") return;
+    if (g.phase !== PHASES.REGULAR || (g.week || 1) > 2) return;
+
+    const team = g.league?.teams?.[g.userTeamIndex];
+    if (!team) return;
+
+    const currentLevel = expectationTypeLevel(g.gm.expectation?.type);
+    const adjusted = deriveAdjustedExpectation(team, g);
+    if (expectationTypeLevel(adjusted.type) < currentLevel || adjusted.winTarget < (g.gm.expectation?.winTarget || 99)) {
+        g.gm.expectation = adjusted;
+    }
+}
+
+function expectationTypeLevel(type) {
+    if (type === "title") return 3;
+    if (type === "contender") return 2;
+    if (type === "playoffs") return 1;
+    return 0;
 }
 
 function computeInitialSalary(expectation, team) {
@@ -925,7 +1049,10 @@ function generateMandate(g) {
     const bias = owner.mandateBias && owner.mandateBias.length
         ? owner.mandateBias
         : ["win_count", "make_playoffs"];
-    const type = bias[Math.floor(Math.random() * bias.length)];
+    let type = bias[Math.floor(Math.random() * bias.length)];
+    if (gm.expectation?.type === "rebuild" && type === "make_playoffs") {
+        type = "win_count";
+    }
 
     const mandate = {
         id: `mandate_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
@@ -935,7 +1062,10 @@ function generateMandate(g) {
     };
 
     if (type === "win_count") {
-        const target = Math.min(g.seasonWeeks * 4 - 5, Math.max(20, (gm.expectation?.winTarget || 38) + 4));
+        const baseTarget = gm.expectation?.winTarget || 18;
+        const minTarget = gm.expectation?.type === "rebuild" ? 10 : 18;
+        const bump = gm.expectation?.type === "rebuild" ? 2 : 4;
+        const target = Math.min(g.seasonWeeks * 4 - 5, Math.max(minTarget, baseTarget + bump));
         mandate.target = target;
         mandate.description = `Win at least ${target} games this regular season.`;
         mandate.reward = 12;
@@ -1126,8 +1256,16 @@ function conductAnnualReview(g, userFinish) {
 
     const owner = ownerConfig(userTeam);
     const fireApproval = owner.fireApprovalThreshold ?? 30;
+    const rebuildingRunway = expectationType === "rebuild" && (stint?.yearsWithTeam || 0) <= 2;
 
-    if (verdict === "failed" && inFinalYear) {
+    if (rebuildingRunway && (verdict === "failed" || verdict === "missed") && inFinalYear) {
+        action = "hot_seat";
+        yearsAdded = 1;
+        salaryChange = -0.10;
+        gm.contract.years += yearsAdded;
+        gm.contract.salary = Math.max(2, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
+        ownerMessage = "The owner sees the rebuild is still early and gives you another year to turn development into wins.";
+    } else if (verdict === "failed" && inFinalYear) {
         action = "fired";
         gm.status = "fired";
         closeCurrentStint(gm, userTeam, g.year);
@@ -1551,7 +1689,7 @@ export function acceptPoachingOffer(offerId) {
     };
     gm.status = "active";
     gm.ownerApproval = 70;
-    gm.expectation = deriveAdjustedExpectation(newTeam);
+    gm.expectation = deriveAdjustedExpectation(newTeam, g);
     gm.activeMandate = null; // mandate was issued by old owner — drop it
 
     // Clear team-specific session state — these all belong to the old team
