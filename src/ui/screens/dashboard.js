@@ -83,6 +83,7 @@ export function DashboardScreen(){
         : null,
     button("Standings", { onClick: () => location.hash = "#/standings" }),
     button("League Leaders", { onClick: () => location.hash = "#/league-leaders" }),
+    button("Player Search", { onClick: () => location.hash = "#/player-search" }),
     button("History", { onClick: () => location.hash = "#/history" }),
     button("Retired", { onClick: () => location.hash = "#/retired" }),
     !isFired ? button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }) : null,
