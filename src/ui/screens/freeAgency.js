@@ -277,8 +277,7 @@ function simCpuFreeAgency(g){
         });
         const best = p.offers[0];
         const team = g.league.teams.find(t => t.id === best.teamId);
-        const capLimit = best.isBirdRights ? SALARY_CAP + 20 : team?.cap.cap;
-        if (team && (capLimit - team.cap.payroll) >= best.salary && team.roster.length < 15) {
+        if (team && (team.cap.cap - team.cap.payroll) >= best.salary && team.roster.length < 15) {
             signPlayer(p, team.id, best.salary, best.years);
         }
     }

@@ -407,8 +407,7 @@ export function scoreFreeAgentOffer(player, offer, team, g = STATE.game) {
 
     if (mode === "win_now" && age >= 29 && team.rating >= 78) score += 22;
     if (mode === "rebuilding" && age <= 24) score += 16;
-    if (player.formerTeamId === team.id && (player.happiness ?? 70) >= 60) score += 18;
-    if (offer.isBirdRights) score += 8;
+    if (player.formerTeamId === team.id && (player.happiness ?? 70) >= 75) score += 12;
 
     return score;
 }
@@ -416,11 +415,12 @@ export function scoreFreeAgentOffer(player, offer, team, g = STATE.game) {
 function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
     p.offers = [];
 
-    // Bird Rights: former CPU team can re-sign up to soft cap (140M)
+    // Once a player reaches free agency, every team has to fit under the normal cap.
+    // Former teams keep a relationship edge, but Bird-rights-style flexibility is extension-only.
     if (p.formerTeamId) {
         const formerTeam = cpuTeams.find(t => t.id === p.formerTeamId);
         if (formerTeam && formerTeam.roster.length < 15) {
-            const birdSpace = (SALARY_CAP + 20) - formerTeam.cap.payroll;
+            const capSpace = formerTeam.cap.cap - formerTeam.cap.payroll;
             const formerAnalysis = teamNeeds[formerTeam.id] || analyzeTeamNeeds(formerTeam, g);
             let wantsToKeep = scoreFreeAgentFit(p, formerTeam, g, formerAnalysis) >= 72 || p.ovr >= 78;
             if (wantsToKeep) {
@@ -432,23 +432,24 @@ function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
                         wantsToKeep = false;
                     } else {
                         const futureAsk = calculateSalary(betterAtPos.ovr, betterAtPos.age + betterAtPos.contract.years);
-                        if ((birdSpace - p.ask) < futureAsk * 0.80) wantsToKeep = false;
+                        if ((capSpace - p.ask) < futureAsk * 0.80) wantsToKeep = false;
                     }
                 }
             }
-            if (wantsToKeep && birdSpace >= p.ask) {
+            if (wantsToKeep && capSpace >= p.ask) {
                 const offerSal = Number((p.ask * (1.05 + Math.random() * 0.05)).toFixed(2));
                 p.offers.push({
                     teamId: formerTeam.id, teamName: formerTeam.name,
-                    salary: Math.min(offerSal, Number(birdSpace.toFixed(2))),
-                    years: p.yearsAsk, isBirdRights: true
+                    salary: Math.min(offerSal, Number(capSpace.toFixed(2))),
+                    years: p.yearsAsk
                 });
             }
         }
     }
 
     let demandChance = 0;
-    if (p.ovr >= 85) demandChance = 0.95;
+    if (p.ovr >= 88) demandChance = 1.00;
+    else if (p.ovr >= 85) demandChance = 0.95;
     else if (p.ovr >= 80) demandChance = 0.70;
     else if (p.ovr >= 75) demandChance = 0.40;
     else if (p.ovr >= 70) demandChance = 0.25; // bench/rotation pieces still get looks
@@ -487,6 +488,34 @@ function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
             p.offers.push({ teamId: t.id, teamName: t.name, salary: Number(offerAmount.toFixed(2)), years: p.yearsAsk });
         }
     }
+
+    ensureStarOutsideOffer(g, p, cpuTeams, teamNeeds);
+}
+
+function ensureStarOutsideOffer(g, p, cpuTeams, teamNeeds) {
+    if ((p.ovr || 0) < 88) return;
+    const hasOutsideOffer = (p.offers || []).some(o => o.teamId !== p.formerTeamId);
+    if (hasOutsideOffer) return;
+
+    const candidates = cpuTeams
+        .filter(t => t.id !== p.formerTeamId)
+        .filter(t => t.roster.length < 15)
+        .map(t => ({ team: t, analysis: teamNeeds[t.id], fit: scoreFreeAgentFit(p, t, g, teamNeeds[t.id]) }))
+        .filter(x => x.fit >= 62)
+        .filter(x => (x.team.cap.cap - x.team.cap.payroll) >= p.ask)
+        .sort((a,b) => b.fit - a.fit + (Math.random() - 0.5) * 6);
+
+    const best = candidates[0];
+    if (!best) return;
+
+    const capSpace = best.team.cap.cap - best.team.cap.payroll;
+    const offerAmount = Math.min(capSpace, p.ask * (1.10 + Math.random() * 0.15));
+    p.offers.push({
+        teamId: best.team.id,
+        teamName: best.team.name,
+        salary: Number(offerAmount.toFixed(2)),
+        years: p.yearsAsk
+    });
 }
 
 function generateInitialOffers(g){
@@ -524,8 +553,7 @@ function runFaCounterOffers(g) {
                 const team = cpuTeams.find(t => t.id === offer.teamId);
                 if (!team) continue;
                 const newSalary = Number((p.offers[0].salary * (1.02 + Math.random() * 0.06)).toFixed(2));
-                const capLimit = offer.isBirdRights ? SALARY_CAP + 20 : team.cap.cap;
-                if ((capLimit - team.cap.payroll) >= newSalary) {
+                if ((team.cap.cap - team.cap.payroll) >= newSalary) {
                     offer.salary = newSalary;
                 }
             }
@@ -1600,6 +1628,35 @@ function generateWildernessOffers(g, openings) {
     return offers;
 }
 
+function justWonChampionship(g) {
+    const review = g.gmReview || latestReviewForExpectation(g);
+    return review?.year === g.year && review?.playoffFinish === "Champion";
+}
+
+function generateChampionCuriosityOffer(g, gm, reps, excludeTeamIds = new Set()) {
+    const userTeamId = g.league.teams[g.userTeamIndex]?.id;
+    const candidates = g.league.teams
+        .filter(t => t.id !== userTeamId && !excludeTeamIds.has(t.id))
+        .slice()
+        .sort((a,b) => {
+            const aGames = (a.wins || 0) + (a.losses || 0);
+            const bGames = (b.wins || 0) + (b.losses || 0);
+            const aPct = aGames ? (a.wins || 0) / aGames : 0.5;
+            const bPct = bGames ? (b.wins || 0) / bGames : 0.5;
+            return aPct - bPct || (a.rating || 70) - (b.rating || 70);
+        });
+
+    const shortList = candidates.slice(0, 4);
+    if (!shortList.length) return null;
+
+    const team = shortList[Math.floor(Math.random() * shortList.length)];
+    const offer = generatePoachingOffer(team, gm, reps);
+    const ownerName = team.owner?.name || `${team.name} owner`;
+    offer.kind = "champion_curiosity";
+    offer.pitch = `${ownerName}: "You just won it all. We know this is a long shot, but our franchise needs that standard."`;
+    return offer;
+}
+
 // Generate a loyalty counter-offer from the user's current owner, IF they care enough to match.
 // Owner approval drives both willingness to counter and how aggressively they match.
 // Returns an offer object (kind: 'loyalty') or null.
@@ -1656,11 +1713,10 @@ function buildJobMarket(g) {
     if (!gm) return;
 
     const openings = simulateLeagueFirings(g);
-    if (!openings.length) return;
-
     const reps = computeReputations(gm, g);
 
     if (gm.status === "fired") {
+        if (!openings.length) return;
         g.gmJobMarket = generateWildernessOffers(g, openings);
         return;
     }
@@ -1684,6 +1740,13 @@ function buildJobMarket(g) {
     const qualifiedPoaching = offers.filter(o => o.salary >= currentSalary + 0.1).slice(0, 3);
 
     // Counter offer from current team — only if there's something credible to counter
+    if (!qualifiedPoaching.length && justWonChampionship(g)) {
+        const fallback = generateChampionCuriosityOffer(g, gm, reps, new Set(offers.map(o => o.teamId)));
+        if (fallback && fallback.salary >= currentSalary + 0.1) {
+            qualifiedPoaching.push(fallback);
+        }
+    }
+
     const poachingOffers = [...qualifiedPoaching];
     if (poachingOffers.length) {
         const bestSalary = Math.max(...poachingOffers.map(o => o.salary));
