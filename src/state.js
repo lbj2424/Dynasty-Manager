@@ -103,6 +103,7 @@ export function ensureAppState(loadedOrNull){
         gm.career ??= {};
         gm.career.tradesExecuted ??= 0;
         if (!("activeMandate" in gm)) gm.activeMandate = null;
+        gm.mandateCooldownUntilYear ??= 0;
         if (!gm.career.teamsHistory || !gm.career.teamsHistory.length) {
             const userTeam = STATE.game.league.teams[STATE.game.userTeamIndex];
             gm.career.teamsHistory = userTeam ? [{
@@ -768,16 +769,44 @@ function latestReviewForExpectation(g) {
 
 function latestTeamRecord(g, teamId) {
     const seasons = g?.history || [];
+    const stint = currentOrLatestStint(g, teamId);
     for (let i = seasons.length - 1; i >= 0; i--) {
+        const h = seasons[i];
+        const isManagedSeason = h.userTeamId === teamId || (
+            !h.userTeamId &&
+            stint &&
+            h.year >= stint.startYear &&
+            (!stint.endYear || h.year <= stint.endYear)
+        );
+        if (isManagedSeason) {
+            const rec = h.userRecord || {};
+            return {
+                id: teamId,
+                name: h.userTeamName || stint?.teamName || "",
+                wins: rec.wins || 0,
+                losses: rec.losses || 0,
+                rating: h.userTeamRating,
+                madePlayoffs: playoffFinishLevel(h.userPlayoffFinish) > 0,
+                playoffFinish: h.userPlayoffFinish
+            };
+        }
+
         const row = (seasons[i].allTeamRecords || []).find(t => t.id === teamId);
         if (row) return row;
     }
     return null;
 }
 
-function activeStintYears(g, teamId) {
+function currentOrLatestStint(g, teamId) {
     const history = g?.gm?.career?.teamsHistory || [];
-    const stint = [...history].reverse().find(s => s.teamId === teamId);
+    for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].teamId === teamId) return history[i];
+    }
+    return null;
+}
+
+function activeStintYears(g, teamId) {
+    const stint = currentOrLatestStint(g, teamId);
     return stint?.yearsWithTeam || 0;
 }
 
@@ -810,9 +839,12 @@ function expectationCapFromRecentPerformance(team, g, level, owner) {
     } else if (wins < 18) {
         cap = 1;
         note = " after last season's losing record";
-    } else if (!madePlayoffs || wins < 24) {
+    } else if (!madePlayoffs) {
         cap = 1;
         note = " after missing the playoffs last season";
+    } else if (wins < 24) {
+        cap = 1;
+        note = " after last season's playoff berth";
     } else if (madePlayoffs && wins < 30) {
         cap = 2;
         note = " after last season's playoff step";
@@ -876,7 +908,10 @@ function deriveAdjustedExpectation(team, g = null) {
 
     const review = latestReviewForExpectation(g);
     const approval = g?.gm?.ownerApproval ?? 70;
-    const isRecentReview = review && (!g?.year || review.year >= g.year - 1);
+    const reviewBelongsToTeam = review?.teamId
+        ? review.teamId === team?.id
+        : activeStintYears(g, team?.id) > 0;
+    const isRecentReview = review && (!g?.year || review.year >= g.year - 1) && reviewBelongsToTeam;
     if (isRecentReview) {
         const finishLevel = playoffFinishLevel(review.playoffFinish);
 
@@ -930,15 +965,23 @@ function deriveAdjustedExpectation(team, g = null) {
 
 function normalizeCurrentOwnerGoal(g) {
     if (!g?.gm || g.gm.status !== "active") return;
-    if (g.phase !== PHASES.REGULAR || (g.week || 1) > 2) return;
+    if (g.phase !== PHASES.REGULAR) return;
 
     const team = g.league?.teams?.[g.userTeamIndex];
     if (!team) return;
 
+    const earlySeason = (g.week || 1) <= 2;
     const currentLevel = expectationTypeLevel(g.gm.expectation?.type);
     const adjusted = deriveAdjustedExpectation(team, g);
-    if (expectationTypeLevel(adjusted.type) < currentLevel || adjusted.winTarget < (g.gm.expectation?.winTarget || 99)) {
+    if (earlySeason && (expectationTypeLevel(adjusted.type) < currentLevel || adjusted.winTarget < (g.gm.expectation?.winTarget || 99))) {
         g.gm.expectation = adjusted;
+        return;
+    }
+
+    const latest = latestTeamRecord(g, team.id);
+    const desc = g.gm.expectation?.description || "";
+    if (latest?.madePlayoffs && desc.includes("missing the playoffs last season")) {
+        g.gm.expectation.description = adjusted.description;
     }
 }
 
@@ -976,6 +1019,7 @@ function buildInitialGm(userTeam, year) {
             initialSalary: salary
         },
         activeMandate: null,
+        mandateCooldownUntilYear: 0,
         status: "active",            // 'active' | 'fired'
         ownerApproval: 70,
         expectation,
@@ -1038,6 +1082,7 @@ function backfillGmFromHistory(g) {
 function generateMandate(g) {
     const gm = g.gm;
     if (!gm || gm.activeMandate || gm.status !== "active") return null;
+    if ((gm.mandateCooldownUntilYear || 0) > g.year) return null;
     const userTeam = g.league.teams[g.userTeamIndex];
     if (!userTeam) return null;
     const owner = ownerConfig(userTeam);
@@ -1107,6 +1152,7 @@ function generateMandate(g) {
     mandate.pitch = `${ownerName} has issued a directive: "${mandate.description}"`;
 
     gm.activeMandate = mandate;
+    gm.mandateCooldownUntilYear = g.year + 2 + Math.floor(Math.random() * 2);
     g.inbox.unshift({
         t: Date.now(),
         msg: `OWNER MANDATE (Week ${g.week}): ${mandate.pitch}`
@@ -1283,7 +1329,7 @@ function conductAnnualReview(g, userFinish) {
         ownerMessage = `${userTeam.owner.name} expects titles. A missed playoff target in your final year is unacceptable.`;
     } else if (verdict === "exceeded_title") {
         action = "big_extension";
-        yearsAdded = 2;
+        yearsAdded = 3;
         salaryChange = 0.50;
         gm.contract.years += yearsAdded;
         gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
@@ -1291,7 +1337,7 @@ function conductAnnualReview(g, userFinish) {
         ownerMessage = "CHAMPIONSHIP! The owner is overjoyed and tore up your contract for a major extension.";
     } else if (verdict === "exceeded") {
         action = "extension";
-        yearsAdded = 1;
+        yearsAdded = 2;
         salaryChange = 0.20;
         gm.contract.years += yearsAdded;
         gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
@@ -1299,7 +1345,7 @@ function conductAnnualReview(g, userFinish) {
         ownerMessage = "The owner is impressed. You've earned a contract extension.";
     } else if (verdict === "met" && inFinalYear) {
         action = "extension";
-        yearsAdded = 1;
+        yearsAdded = 2;
         salaryChange = 0.05;
         gm.contract.years += yearsAdded;
         gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
@@ -1324,6 +1370,8 @@ function conductAnnualReview(g, userFinish) {
 
     const review = {
         year: g.year,
+        teamId: userTeam?.id,
+        teamName: userTeam?.name,
         wins, losses, winTarget,
         winDelta,
         expectationType,
@@ -1466,14 +1514,25 @@ function generatePoachingOffer(team, gm, reps) {
     const owner = ownerConfig(team);
     mult *= (owner.salaryMultiplier || 1.0);
 
-    const salary = Math.max(3, Math.min(22, Number((baseSalary * mult).toFixed(1))));
+    let salary = baseSalary * mult;
+    const currentSalary = gm?.contract?.salary || 0;
+    if (currentSalary > 0) {
+        let stretch = 1.08;
+        if (repKeys.has("champion")) stretch = 1.15;
+        if (repKeys.has("finals_veteran")) stretch = Math.max(stretch, 1.18);
+        if (repKeys.has("dynasty")) stretch = 1.25;
+        if (owner.key === "win_now_zealot") stretch += 0.05;
+        if (owner.key === "cheap") stretch -= 0.04;
+        salary = Math.max(salary, currentSalary * stretch);
+    }
+    salary = Math.max(3, Math.min(30, Number(salary.toFixed(1))));
 
     // Title contenders want shorter, results-now deals; rebuilders give longer runways
     let years = tier === "title" ? 3
         : tier === "contender" ? 3
         : tier === "playoffs" ? 4
         : 5;
-    years = Math.max(2, years + (owner.contractYearsDelta || 0));
+    years = Math.max(3, years + (owner.contractYearsDelta || 0));
 
     // Build pitch, using owner name and archetype flavor
     const ownerName = team.owner?.name || `${team.name} owner`;
@@ -1523,7 +1582,7 @@ function generateWildernessOffers(g, openings) {
     const pool = teams.slice(0, 4);
     for (const t of pool) {
         if (offers.length >= 2) break;
-        // Wilderness offers are 1-2 year low-tier deals
+        // Wilderness offers are lower-tier deals, but still give the GM a real runway.
         const salary = Math.max(2.5, Math.min(6, Number(((t.rating || 65) / 18).toFixed(1))));
         const ownerName = t.owner?.name || `${t.name} owner`;
         offers.push({
@@ -1532,7 +1591,7 @@ function generateWildernessOffers(g, openings) {
             teamName: t.name,
             teamRating: t.rating || 65,
             teamTier: "rebuild",
-            contractYears: 2,
+            contractYears: 3,
             salary,
             pitch: `${ownerName}: "We need a steady hand — willing to take a chance on a comeback. One-year-show-me deal with an option."`,
             kind: "wilderness"
@@ -1619,10 +1678,10 @@ function buildJobMarket(g) {
         }
     }
 
-    // Filter: a CPU team only makes the offer if it actually beats the user's current salary.
-    // (Otherwise they know the user won't bite, so they don't bother.)
+    // Filter: a CPU team only makes the offer if it at least beats the user's current salary.
+    // generatePoachingOffer stretches serious bids, so stars still get a market after big raises.
     const currentSalary = gm.contract?.salary || 0;
-    const qualifiedPoaching = offers.filter(o => o.salary > currentSalary).slice(0, 3);
+    const qualifiedPoaching = offers.filter(o => o.salary >= currentSalary + 0.1).slice(0, 3);
 
     // Counter offer from current team — only if there's something credible to counter
     const poachingOffers = [...qualifiedPoaching];
@@ -1659,6 +1718,8 @@ export function acceptPoachingOffer(offerId) {
     if (!newTeam) return { success: false, msg: "Team no longer exists." };
     const newIndex = g.league.teams.findIndex(t => t.id === offer.teamId);
     if (newIndex < 0) return { success: false, msg: "Team not in league." };
+    const contractYears = Math.max(3, offer.contractYears || 3);
+    offer.contractYears = contractYears;
 
     // Close out current stint (if any). Fired GMs already closed theirs in conductAnnualReview.
     const currentTeam = g.league.teams[g.userTeamIndex];
@@ -1682,7 +1743,7 @@ export function acceptPoachingOffer(offerId) {
     // Switch teams and reset contract / owner
     g.userTeamIndex = newIndex;
     gm.contract = {
-        years: offer.contractYears,
+        years: contractYears,
         salary: offer.salary,
         yearSigned: g.year,
         initialSalary: offer.salary
@@ -1691,6 +1752,7 @@ export function acceptPoachingOffer(offerId) {
     gm.ownerApproval = 70;
     gm.expectation = deriveAdjustedExpectation(newTeam, g);
     gm.activeMandate = null; // mandate was issued by old owner — drop it
+    gm.mandateCooldownUntilYear = Math.max(gm.mandateCooldownUntilYear || 0, g.year + 1);
 
     // Clear team-specific session state — these all belong to the old team
     g.pendingTradeOffers = [];
@@ -1701,7 +1763,7 @@ export function acceptPoachingOffer(offerId) {
 
     g.inbox.unshift({
         t: Date.now(),
-        msg: `NEW JOB: You are now the GM of the ${newTeam.name}. ${offer.contractYears} years at $${offer.salary}M/yr.`
+        msg: `NEW JOB: You are now the GM of the ${newTeam.name}. ${contractYears} years at $${offer.salary}M/yr.`
     });
     autoSave();
     return { success: true, msg: `Welcome to the ${newTeam.name}.`, newTeamName: newTeam.name };
@@ -1871,6 +1933,13 @@ function processEndSeasonRoster(g){
           devReasons.push("strength focus");
       } else {
           devReasons.push("balanced focus");
+      }
+
+      if (age >= 30) {
+          const declineFloor = age <= 32 ? -1 : age <= 35 ? -2 : -3;
+          offChange = Math.min(offChange, declineFloor);
+          defChange = Math.min(defChange, declineFloor);
+          devReasons.push(age <= 32 ? "veteran decline begins" : "veteran decline");
       }
 
       p.off = clamp(p.off + offChange, 40, 99);
@@ -3800,6 +3869,9 @@ export function finalizeSeasonAndLogHistory({ championTeamId, userPlayoffFinish 
 
   g.history.push({
     year: g.year,
+    userTeamId: userTeam.id,
+    userTeamName: userTeam.name,
+    userTeamRating: userTeam.rating,
     userRecord: { wins: userTeam.wins, losses: userTeam.losses },
     userPlayoffFinish: userFinish,
     championTeam: championTeam?.name || "—",

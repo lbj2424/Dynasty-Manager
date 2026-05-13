@@ -181,6 +181,7 @@ function makePick(d, teamId, prospect, g){
   const team = g.league.teams.find(t => t.id === teamId);
   if (team){
     const rookieSalary = round === 1 ? 4.0 : 1.5;
+    const rookieYears = round === 1 ? 4 : 2;
     
     // Generate OFF/DEF for rookies
     const typeRoll = Math.random();
@@ -216,7 +217,7 @@ function makePick(d, teamId, prospect, g){
       happiness: 70,
       dev: { focus: "Balanced", points: 7 },
       promisedRole: "Reserve",
-      contract: { years: 2, salary: rookieSalary },
+      contract: { years: rookieYears, salary: rookieSalary },
       stats: { gp:0, pts:0, reb:0, ast:0 },
       rotation: { minutes: 0, isStarter: false },
       careerStats: [] 

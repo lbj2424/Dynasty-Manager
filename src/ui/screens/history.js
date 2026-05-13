@@ -20,6 +20,7 @@ export function HistoryScreen(){
 
   const rows = hist.map(h => el("tr", {}, [
     el("td", {}, String(h.year)),
+    el("td", {}, teamForSeason(g, h) || "—"),
     el("td", {}, `${h.userRecord.wins}-${h.userRecord.losses}`),
     el("td", {}, h.userPlayoffFinish || "—"),
     el("td", {}, h.championTeam || "—"),
@@ -29,10 +30,33 @@ export function HistoryScreen(){
     el("td", {}, h.awards?.ROY ? `${h.awards.ROY.player} (${h.awards.ROY.team})` : "—"),
   ]));
 
+  const stints = g.gm?.career?.teamsHistory || [];
+  if (stints.length) {
+    root.appendChild(card("GM Career Path", "Teams you have managed.", [
+      el("table", { class:"table" }, [
+        el("thead", {}, el("tr", {}, [
+          el("th", {}, "Team"),
+          el("th", {}, "Years"),
+          el("th", {}, "Seasons"),
+          el("th", {}, "Playoffs"),
+          el("th", {}, "Titles")
+        ])),
+        el("tbody", {}, stints.map(stint => el("tr", {}, [
+          el("td", {}, stint.teamName || "—"),
+          el("td", {}, stint.endYear ? `${stint.startYear}-${stint.endYear}` : `${stint.startYear}-present`),
+          el("td", {}, String(stint.yearsWithTeam || 0)),
+          el("td", {}, String(stint.playoffsWithTeam || 0)),
+          el("td", {}, String(stint.titlesWithTeam || 0))
+        ])))
+      ])
+    ]));
+  }
+
   root.appendChild(card("Season Log", "Newest season at the top.", [
     el("table", { class:"table" }, [
       el("thead", {}, el("tr", {}, [
         el("th", {}, "Year"),
+        el("th", {}, "Team"),
         el("th", {}, "Your Record"),
         el("th", {}, "Your Playoffs"),
         el("th", {}, "Champion"),
@@ -42,7 +66,7 @@ export function HistoryScreen(){
         el("th", {}, "ROY")
       ])),
       el("tbody", {}, rows.length ? rows : [
-        el("tr", {}, [el("td", { colspan:"8" }, "No history yet. Finish a season to record it.")])
+        el("tr", {}, [el("td", { colspan:"9" }, "No history yet. Finish a season to record it.")])
       ])
     ])
   ]));
@@ -74,7 +98,7 @@ export function HistoryScreen(){
             el("th", {}, "")
           ])),
           el("tbody", {}, teams.map((t, i) => el("tr", {
-            style: t.name === userTeam.name ? "background:rgba(var(--accent-rgb,100,200,255),0.1);" : ""
+            style: isManagedTeamForEntry(t, entry, g) ? "background:rgba(var(--accent-rgb,100,200,255),0.1);" : ""
           }, [
             el("td", { style:"opacity:0.6;" }, String(i + 1)),
             el("td", { style:"font-weight:bold;" }, t.name),
@@ -105,4 +129,18 @@ export function HistoryScreen(){
   }
 
   return root;
+}
+
+function teamForSeason(g, h){
+  if (h.userTeamName) return h.userTeamName;
+  const stint = (g.gm?.career?.teamsHistory || []).find(s =>
+    h.year >= s.startYear && (!s.endYear || h.year <= s.endYear)
+  );
+  return stint?.teamName || g.league.teams[g.userTeamIndex]?.name;
+}
+
+function isManagedTeamForEntry(team, entry, g){
+  if (entry.userTeamId) return team.id === entry.userTeamId;
+  if (entry.userTeamName) return team.name === entry.userTeamName;
+  return team.name === teamForSeason(g, entry);
 }
