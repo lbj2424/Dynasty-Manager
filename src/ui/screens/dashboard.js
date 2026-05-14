@@ -592,7 +592,7 @@ function schedulePanel(g) {
   ]);
 }
 
-// Year-End owner review modal. One of: big_extension | extension | hot_seat | lame_duck | warning | status_quo | fired.
+// Year-End owner review modal. Contract changes happen through accepted offers, not automatically.
 function showGMReviewModal(review, gm, onClose) {
     const overlay = el("div", {
         style: "position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.85); z-index:999; display:flex; justify-content:center; align-items:center;"
@@ -605,7 +605,7 @@ function showGMReviewModal(review, gm, onClose) {
     overlay.onclick = (e) => { if (e.target === overlay) close(); };
 
     const isFired = review.action === "fired";
-    const goodActions = ["big_extension", "extension"];
+    const goodActions = ["champion_review", "positive_review"];
     const warnActions = ["hot_seat", "lame_duck", "warning"];
 
     const headerColor = isFired ? "var(--bad)"
@@ -614,8 +614,8 @@ function showGMReviewModal(review, gm, onClose) {
         : "var(--text)";
 
     const headerText = isFired ? "Fired"
-        : review.action === "big_extension" ? "Major Extension!"
-        : review.action === "extension" ? "Contract Extended"
+        : review.action === "champion_review" ? "Championship Review"
+        : review.action === "positive_review" ? "Strong Review"
         : review.action === "hot_seat" ? "Hot Seat"
         : review.action === "lame_duck" ? "Final Year"
         : review.action === "warning" ? "Owner Warning"
@@ -646,7 +646,7 @@ function showGMReviewModal(review, gm, onClose) {
 
     const contractBody = !isFired ? [
         el("div", { class:"sep" }),
-        el("div", { class:"h2", style:"font-size:0.85em; opacity:0.6;" }, "NEW CONTRACT TERMS"),
+        el("div", { class:"h2", style:"font-size:0.85em; opacity:0.6;" }, "CURRENT CONTRACT"),
         el("div", { style:"display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:6px;" }, [
             careerStat("Years Remaining", review.yearsRemaining),
             careerStat("Salary", `$${review.salary.toFixed(1)}M`),

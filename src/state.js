@@ -1275,8 +1275,8 @@ function closeCurrentStint(gm, team, year) {
     stint.endingRating = team?.rating || stint.startingRating || 70;
 }
 
-// End-of-season owner review. Updates the GM's contract, career stats, and decides:
-//   fired | hot_seat | extension | big_extension | lame_duck | status_quo
+// End-of-season owner review. Updates approval/status only; contracts change through accepted offers.
+//   fired | hot_seat | champion_review | positive_review | lame_duck | status_quo
 // Returns the review object (also written to g.gmReview for the modal to pick up).
 function conductAnnualReview(g, userFinish) {
     const gm = g.gm;
@@ -1370,11 +1370,7 @@ function conductAnnualReview(g, userFinish) {
 
     if (rebuildingRunway && (verdict === "failed" || verdict === "missed") && inFinalYear) {
         action = "hot_seat";
-        yearsAdded = 1;
-        salaryChange = -0.10;
-        gm.contract.years += yearsAdded;
-        gm.contract.salary = Math.max(2, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
-        ownerMessage = "The owner sees the rebuild is still early and gives you another year to turn development into wins.";
+        ownerMessage = "The owner sees the rebuild is still early, but any new contract will need to be accepted from the offer table.";
     } else if (verdict === "failed" && inFinalYear) {
         action = "fired";
         gm.status = "fired";
@@ -1392,35 +1388,17 @@ function conductAnnualReview(g, userFinish) {
         closeCurrentStint(gm, userTeam, g.year);
         ownerMessage = `${userTeam.owner.name} expects titles. A missed playoff target in your final year is unacceptable.`;
     } else if (verdict === "exceeded_title") {
-        action = "big_extension";
-        yearsAdded = 3;
-        salaryChange = 0.50;
-        gm.contract.years += yearsAdded;
-        gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
-        gm.career.extensions += 1;
-        ownerMessage = "CHAMPIONSHIP! The owner is overjoyed and tore up your contract for a major extension.";
+        action = "champion_review";
+        ownerMessage = "CHAMPIONSHIP! The owner is overjoyed. Any new deal will appear as an offer you can accept on the Dashboard.";
     } else if (verdict === "exceeded") {
-        action = "extension";
-        yearsAdded = 2;
-        salaryChange = 0.20;
-        gm.contract.years += yearsAdded;
-        gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
-        gm.career.extensions += 1;
-        ownerMessage = "The owner is impressed. You've earned a contract extension.";
+        action = "positive_review";
+        ownerMessage = "The owner is impressed. Any extension or raise will come through an offer you can choose to accept.";
     } else if (verdict === "met" && inFinalYear) {
-        action = "extension";
-        yearsAdded = 2;
-        salaryChange = 0.05;
-        gm.contract.years += yearsAdded;
-        gm.contract.salary = Math.min(20, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
-        ownerMessage = "Solid season. The owner extended you a modest one-year deal — keep delivering.";
+        action = "positive_review";
+        ownerMessage = "Solid season. The owner may put a new deal on the table, but it is your call to accept it.";
     } else if ((verdict === "missed" || verdict === "close") && inFinalYear) {
         action = "hot_seat";
-        yearsAdded = 1;
-        salaryChange = -0.15;
-        gm.contract.years += yearsAdded;
-        gm.contract.salary = Math.max(2, Number((gm.contract.salary * (1 + salaryChange)).toFixed(1)));
-        ownerMessage = "Underwhelming season. The owner is giving you one more year — results are expected.";
+        ownerMessage = "Underwhelming season. If the owner keeps you, the new contract will appear as an offer you can accept.";
     } else if (inFinalYear) {
         action = "lame_duck";
         ownerMessage = "Your contract expires after next season. The owner wants results before discussing an extension.";
@@ -1741,6 +1719,15 @@ function generateLoyaltyCounter(g, gm, bestPoachingSalary) {
     };
 }
 
+function shouldOfferCurrentTeamExtension(g, gm) {
+    if (!gm || gm.status !== "active") return false;
+    const review = g.gmReview;
+    if (!review) return false;
+    if ((gm.ownerApproval ?? 0) < 70) return false;
+    if ((gm.contract?.years ?? 0) <= 0) return true;
+    return ["exceeded_title", "exceeded"].includes(review.verdict);
+}
+
 // Build the job market for the user this offseason. Called from finalizeSeasonAndLogHistory
 // AFTER conductAnnualReview so we know if they're active or fired.
 function buildJobMarket(g) {
@@ -1788,6 +1775,12 @@ function buildJobMarket(g) {
         const bestSalary = Math.max(...poachingOffers.map(o => o.salary));
         const counter = generateLoyaltyCounter(g, gm, bestSalary);
         if (counter) poachingOffers.unshift(counter); // loyalty offer at top
+    } else if (shouldOfferCurrentTeamExtension(g, gm)) {
+        const review = g.gmReview;
+        const currentSalary = gm.contract?.salary || 0;
+        const targetSalary = currentSalary * (review?.verdict === "exceeded_title" ? 1.25 : 1.08);
+        const counter = generateLoyaltyCounter(g, gm, targetSalary);
+        if (counter) poachingOffers.unshift(counter);
     }
 
     g.gmJobMarket = poachingOffers;
