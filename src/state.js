@@ -1,7 +1,7 @@
 import { generateLeague } from "./gen/league.js";
 import { generateNCAAProspects, generateInternationalPool } from "./gen/prospects.js";
 import { generateFreeAgents } from "./gen/freeAgents.js";
-import { generateTeamRoster, calculateSalary, capPlayerSalary } from "./gen/players.js";
+import { generateTeamRoster, calculateSalary, calculateExtensionSalary, capPlayerSalary } from "./gen/players.js";
 import {
   HOURS_BANK_MAX,
   HOURS_PER_WEEK,
@@ -2136,12 +2136,7 @@ export function negotiateExtension(teamId, playerId, execute = true){
     if (p.contract.years > 2) return { success:false, msg:"Too early to extend (>2 years left)." };
     if (p.happiness < 40) return { success:false, msg:"Player is too unhappy to discuss an extension." };
 
-    const fairValue = calculateSalary(p.ovr, p.age);
-    let discount = 1.0;
-    if (p.happiness >= 90) discount = 0.90;
-    else if (p.happiness >= 70) discount = 0.95;
-
-    const askAmount = capPlayerSalary(fairValue * discount, p.ovr, p.awards);
+    const askAmount = calculateExtensionSalary(p.ovr, p.age, p.happiness, p.awards);
     const addYears = 3; 
 
     const projectedPayroll = team.cap.payroll + (askAmount - p.contract.salary);
@@ -2499,9 +2494,7 @@ function simCpuExtensions(g) {
             if (!isWorthExtending) continue;
             if (Math.random() > 0.70) continue; // not every eligible player gets extended
 
-            const fairValue = calculateSalary(p.ovr, p.age);
-            const discount = (p.happiness ?? 70) >= 90 ? 0.90 : (p.happiness ?? 70) >= 70 ? 0.95 : 1.0;
-            const askAmount = capPlayerSalary(fairValue * discount, p.ovr, p.awards);
+            const askAmount = calculateExtensionSalary(p.ovr, p.age, p.happiness, p.awards);
             const addYears = 3;
 
             const projectedPayroll = team.cap.payroll + (askAmount - (p.contract.salary || 0));

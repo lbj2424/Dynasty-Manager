@@ -35,6 +35,33 @@ export function calculateSalary(ovr, age) {
   return Number((base * ageMult).toFixed(2));
 }
 
+export function calculateExtensionSalary(ovr, age, happiness = 70, awards = []) {
+  const marketValue = calculateSalary(ovr, age) * extensionPrestigeMultiplier(ovr, awards);
+  let discount = 1.0;
+  if (happiness >= 90) discount = 0.90;
+  else if (happiness >= 70) discount = 0.95;
+  return capPlayerSalary(marketValue * discount, ovr, awards);
+}
+
+function extensionPrestigeMultiplier(ovr, awards = []) {
+  let mult = 1.0;
+  if (ovr >= 99) mult += 0.25;
+  else if (ovr >= 97) mult += 0.18;
+  else if (ovr >= 95) mult += 0.12;
+  else if (ovr >= 92) mult += 0.07;
+
+  const mvps = awards.filter(a => a.includes("MVP") && !a.includes("DPOY") && !a.includes("OPOY")).length;
+  const allStars = awards.filter(a => a.includes("All-Star")).length;
+  const dpoys = awards.filter(a => a.includes("DPOY")).length;
+  const opoys = awards.filter(a => a.includes("OPOY")).length;
+  mult += mvps * 0.06;
+  mult += Math.min(allStars, 6) * 0.015;
+  mult += dpoys * 0.03;
+  mult += opoys * 0.03;
+
+  return Math.min(mult, 1.35);
+}
+
 export function salaryCeiling(ovr, awards = []) {
   if (ovr >= 99 && hasMajorAwards(awards)) return 65;
   if (ovr >= 97) return 62;
