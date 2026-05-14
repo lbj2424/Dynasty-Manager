@@ -35,6 +35,29 @@ export function calculateSalary(ovr, age) {
   return Number((base * ageMult).toFixed(2));
 }
 
+export function salaryCeiling(ovr, awards = []) {
+  if (ovr >= 99 && hasMajorAwards(awards)) return 65;
+  if (ovr >= 97) return 62;
+  if (ovr >= 95) return 58;
+  if (ovr >= 92) return 52;
+  if (ovr >= 88) return 45;
+  return 40;
+}
+
+export function capPlayerSalary(amount, ovr, awards = []) {
+  return Number(Math.min(amount || 0, salaryCeiling(ovr || 60, awards)).toFixed(2));
+}
+
+function hasMajorAwards(awards = []) {
+  const majorCount = awards.filter(a =>
+    a.includes("MVP") ||
+    a.includes("OPOY") ||
+    a.includes("DPOY") ||
+    a.includes("All-Star")
+  ).length;
+  return majorCount >= 2;
+}
+
 // FIX: Default to 2020
 export function generateTeamRoster({ teamName, teamRating, year=2020, seed="roster" }){
   const r = rng(seedFromString(`${seed}_${teamName}_${year}`));

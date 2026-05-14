@@ -1,7 +1,7 @@
 import { generateLeague } from "./gen/league.js";
 import { generateNCAAProspects, generateInternationalPool } from "./gen/prospects.js";
 import { generateFreeAgents } from "./gen/freeAgents.js";
-import { generateTeamRoster, calculateSalary } from "./gen/players.js";
+import { generateTeamRoster, calculateSalary, capPlayerSalary } from "./gen/players.js";
 import {
   HOURS_BANK_MAX,
   HOURS_PER_WEEK,
@@ -72,11 +72,13 @@ export function ensureAppState(loadedOrNull){
     STATE.game.lastUserOfferWeek ??= 0;
     STATE.game.gmReview ??= null;
     STATE.game.gmJobMarket ??= [];
+    migrateFreeAgentSalaryScale(STATE.game);
 
     STATE.game.league?.teams?.forEach(t => {
       t.wins ??= 0; t.losses ??= 0;
       t.assets ??= { picks: generateFuturePicks(t.id, STATE.game.year) };
       t.cap ??= { cap: SALARY_CAP, payroll: 0 };
+      if (!t.cap.cap || t.cap.cap < SALARY_CAP) t.cap.cap = SALARY_CAP;
       t.momentum ??= 0;
 
       let needsRotationFix = false;
@@ -88,6 +90,9 @@ export function ensureAppState(loadedOrNull){
         p.age ??= 24; 
         p.dev ??= { focus: "Balanced", points: 0 };
         p.dev.focus ??= "Balanced";
+        if (p.contract?.salary) {
+          p.contract.salary = capPlayerSalary(p.contract.salary, p.ovr, p.awards);
+        }
         
         if (p.off === undefined) p.off = p.ovr;
         if (p.def === undefined) p.def = p.ovr;
@@ -144,7 +149,7 @@ export function newGameState({ userTeamIndex=0 } = {}){
     t.assets = { picks: generateFuturePicks(t.id, year) };
     t.roster = generateTeamRoster({ teamName: t.name, teamRating: t.rating, year }) || [];
     t.cap ??= { cap: SALARY_CAP, payroll: 0 };
-    t.cap.cap ??= SALARY_CAP;
+    if (!t.cap.cap || t.cap.cap < SALARY_CAP) t.cap.cap = SALARY_CAP;
 
     // Ensure initial gen has awards array
     t.roster.forEach(p => p.awards = []);
@@ -204,6 +209,23 @@ export function newGameState({ userTeamIndex=0 } = {}){
       gmJobMarket: []
     }
   };
+}
+
+function migrateFreeAgentSalaryScale(g) {
+  const pools = [
+    g.midseasonFaPool,
+    g.offseason?.freeAgents?.pool,
+    g.offseason?.expiring
+  ];
+  for (const pool of pools) {
+    for (const p of (pool || [])) {
+      if (p.ask) p.ask = capPlayerSalary(p.ask, p.ovr, p.awards);
+      if (p.contract?.salary) p.contract.salary = capPlayerSalary(p.contract.salary, p.ovr, p.awards);
+      for (const offer of (p.offers || [])) {
+        offer.salary = capPlayerSalary(offer.salary, p.ovr, p.awards);
+      }
+    }
+  }
 }
 
 // -------------------- SAVE UTILS --------------------
@@ -451,7 +473,7 @@ function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
                 }
             }
             if (wantsToKeep && capSpace >= p.ask) {
-                const offerSal = Number((p.ask * (1.05 + Math.random() * 0.05)).toFixed(2));
+                const offerSal = capPlayerSalary(p.ask * (1.05 + Math.random() * 0.05), p.ovr, p.awards);
                 p.offers.push({
                     teamId: formerTeam.id, teamName: formerTeam.name,
                     salary: Math.min(offerSal, Number(capSpace.toFixed(2))),
@@ -496,10 +518,10 @@ function generateOffersForPlayer(g, p, cpuTeams, teamNeeds) {
         if (interestBoost >= 2.0) salaryMult = 1.15 + Math.random() * 0.10;
         else if (interestBoost >= 1.5) salaryMult = 1.05 + Math.random() * 0.10;
         else salaryMult = 0.90 + Math.random() * 0.20;
-        const offerAmount = p.ask * salaryMult;
+        const offerAmount = capPlayerSalary(p.ask * salaryMult, p.ovr, p.awards);
 
         if (capSpace > offerAmount && t.roster.length < 15) {
-            p.offers.push({ teamId: t.id, teamName: t.name, salary: Number(offerAmount.toFixed(2)), years: p.yearsAsk });
+            p.offers.push({ teamId: t.id, teamName: t.name, salary: offerAmount, years: p.yearsAsk });
         }
     }
 
@@ -523,7 +545,7 @@ function ensureStarOutsideOffer(g, p, cpuTeams, teamNeeds) {
     if (!best) return;
 
     const capSpace = best.team.cap.cap - best.team.cap.payroll;
-    const offerAmount = Math.min(capSpace, p.ask * (1.10 + Math.random() * 0.15));
+    const offerAmount = Math.min(capSpace, capPlayerSalary(p.ask * (1.10 + Math.random() * 0.15), p.ovr, p.awards));
     p.offers.push({
         teamId: best.team.id,
         teamName: best.team.name,
@@ -566,7 +588,7 @@ function runFaCounterOffers(g) {
             if (gap <= 0.20 && Math.random() < 0.50) {
                 const team = cpuTeams.find(t => t.id === offer.teamId);
                 if (!team) continue;
-                const newSalary = Number((p.offers[0].salary * (1.02 + Math.random() * 0.06)).toFixed(2));
+                const newSalary = capPlayerSalary(p.offers[0].salary * (1.02 + Math.random() * 0.06), p.ovr, p.awards);
                 if ((team.cap.cap - team.cap.payroll) >= newSalary) {
                     offer.salary = newSalary;
                 }
@@ -2080,7 +2102,7 @@ function processEndSeasonRoster(g){
 
         g.offseason.expiring.push({
             ...p,
-            ask: Number((fairValue * greed * prestigeMult).toFixed(2)),
+            ask: capPlayerSalary(fairValue * greed * prestigeMult, p.ovr, p.awards),
             yearsAsk: Math.max(1, Math.min(4, Math.floor(Math.random() * 4) + 1)),
             formerTeamId: t.id,
             signedByTeamId: null,
@@ -2119,7 +2141,7 @@ export function negotiateExtension(teamId, playerId, execute = true){
     if (p.happiness >= 90) discount = 0.90;
     else if (p.happiness >= 70) discount = 0.95;
 
-    const askAmount = Number((fairValue * discount).toFixed(2));
+    const askAmount = capPlayerSalary(fairValue * discount, p.ovr, p.awards);
     const addYears = 3; 
 
     const projectedPayroll = team.cap.payroll + (askAmount - p.contract.salary);
@@ -2479,7 +2501,7 @@ function simCpuExtensions(g) {
 
             const fairValue = calculateSalary(p.ovr, p.age);
             const discount = (p.happiness ?? 70) >= 90 ? 0.90 : (p.happiness ?? 70) >= 70 ? 0.95 : 1.0;
-            const askAmount = Number((fairValue * discount).toFixed(2));
+            const askAmount = capPlayerSalary(fairValue * discount, p.ovr, p.awards);
             const addYears = 3;
 
             const projectedPayroll = team.cap.payroll + (askAmount - (p.contract.salary || 0));
@@ -3127,7 +3149,7 @@ export function releasePlayer(teamId, playerId){
     const prestigeMult = calcAwardPrestige(p);
     const faEntry = {
         ...p,
-        ask: Number((fairValue * greed * prestigeMult).toFixed(2)),
+        ask: capPlayerSalary(fairValue * greed * prestigeMult, p.ovr, p.awards),
         yearsAsk: Math.max(1, Math.min(3, Math.floor(Math.random() * 3) + 1)),
         signedByTeamId: null,
         cutByTeamId: team.id,
@@ -3217,6 +3239,7 @@ export function signMidseasonFreeAgent(playerId, salary, years) {
     if (idx === -1) return { success: false, msg: "Player not found." };
 
     const p = pool[idx];
+    salary = capPlayerSalary(salary, p.ovr, p.awards);
     const userTeam = g.league.teams[g.userTeamIndex];
     const capSpace = userTeam.cap.cap - userTeam.cap.payroll;
 

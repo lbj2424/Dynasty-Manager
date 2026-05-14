@@ -6,7 +6,7 @@ export const HOURS_BANK_MAX = 60;
 
 export const DECLARE_THRESHOLD = 75;
 
-export const SALARY_CAP = 120;      // cap in "millions"
+export const SALARY_CAP = 130;      // cap in "millions"
 export const ROSTER_MAX = 15;
 
 export const PHASES = {

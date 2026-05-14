@@ -1,6 +1,7 @@
 import { el, card, button, badge, showPlayerModal } from "../components.js";
 import { getState, startDraft, calculateSignChance, saveToSlot, getActiveSaveSlot, autoDistributeMinutes, advanceFaRound, analyzeTeamNeeds, scoreFreeAgentFit, scoreFreeAgentOffer } from "../../state.js";
 import { PHASES, SALARY_CAP } from "../../data/constants.js";
+import { capPlayerSalary } from "../../gen/players.js";
 
 export function FreeAgencyScreen(){
   const s = getState();
@@ -119,7 +120,11 @@ export function FreeAgencyScreen(){
       faRound < 3
         ? button(`Advance to FA Week ${faRound + 1}`, {
             onClick: () => {
+              rebuildCpuFreeAgentOffers(g);
+              resolveFreeAgencyWave(g, { final: false });
               advanceFaRound();
+              rebuildCpuFreeAgentOffers(g);
+              saveToSlot(getActiveSaveSlot() || "A");
               rerender(root);
             }
           })
@@ -127,7 +132,10 @@ export function FreeAgencyScreen(){
       button(faRound >= 3 ? "Resolve FA Results" : "Finish Free Agency -> Draft", {
         primary: true,
         onClick: () => {
-          simCpuFreeAgency(g);
+          rebuildCpuFreeAgentOffers(g);
+          resolveFreeAgencyWave(g, { final: true });
+          signEliteHoldouts(g);
+          fillCpuRosterHoles(g);
           if (faRound >= 3) {
             fa.resultsReady = true;
             saveToSlot(getActiveSaveSlot() || "A");
@@ -338,6 +346,7 @@ function signPlayer(p, teamId, salary, years, reason = "Accepted best offer"){
     const team = g.league.teams.find(t => t.id === teamId);
     if (!team) return;
     if (team.roster.length >= 15) return;
+    salary = capPlayerSalary(salary, p.ovr, p.awards);
     
     p.signedByTeamId = teamId;
     p.contract = { years, salary };
@@ -378,7 +387,146 @@ function recordFaSigning(g, p, team, salary, years, reason) {
     });
 }
 
-function simCpuFreeAgency(g){
+function resolveFreeAgencyWave(g, { final = false } = {}){
+    const fa = g.offseason.freeAgents;
+    if (!fa) return;
+
+    const candidates = (fa.pool || [])
+        .filter(p => !p.signedByTeamId)
+        .map(p => ({ p, offer: getBestValidOffer(g, p), urgency: freeAgentUrgency(p, fa.round || 1) }))
+        .filter(x => x.offer)
+        .sort((a, b) => b.urgency - a.urgency + (Math.random() - 0.5) * 35);
+
+    const targetCount = final
+        ? candidates.length
+        : Math.max(1, Math.ceil(candidates.length / Math.max(1, 4 - (fa.round || 1))));
+
+    for (const { p, offer } of candidates.slice(0, targetCount)) {
+        const team = g.league.teams.find(t => t.id === offer.teamId);
+        if (!team) continue;
+        if ((team.cap.cap - team.cap.payroll) < offer.salary || team.roster.length >= 15) continue;
+        signPlayer(p, team.id, offer.salary, offer.years, final ? "Accepted final offer" : `Committed after FA Week ${fa.round || 1}`);
+    }
+}
+
+function rebuildCpuFreeAgentOffers(g) {
+    const fa = g.offseason.freeAgents;
+    if (!fa) return;
+
+    const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+    for (const p of fa.pool) {
+        if (p.signedByTeamId) continue;
+        p.offers = buildCpuOffersForPlayer(g, p, cpuTeams);
+    }
+}
+
+function buildCpuOffersForPlayer(g, p, cpuTeams) {
+    const offers = [];
+    const candidates = cpuTeams
+        .filter(t => t.roster.length < 15)
+        .map(t => {
+            const analysis = analyzeTeamNeeds(t, g);
+            return {
+                team: t,
+                analysis,
+                fit: scoreFreeAgentFit(p, t, g, analysis),
+                capSpace: t.cap.cap - t.cap.payroll
+            };
+        })
+        .filter(x => x.capSpace >= minimumStarOffer(p))
+        .filter(x => x.fit >= ((p.ovr || 0) >= 88 ? 50 : 55))
+        .sort((a, b) => b.fit - a.fit + (Math.random() - 0.5) * 8);
+
+    const maxOffers = (p.ovr || 0) >= 90 ? 5 : (p.ovr || 0) >= 84 ? 4 : 3;
+    for (const { team, analysis, fit, capSpace } of candidates) {
+        if (offers.length >= maxOffers) break;
+        const posCount = analysis.counts[p.pos] || 0;
+        const currentStarterOvr = analysis.bestAtPos[p.pos] || 0;
+        if (posCount >= 4 && (p.ovr || 0) < 88) continue;
+        if (posCount >= 2 && (p.ovr || 0) < currentStarterOvr && fit < 85) continue;
+
+        let salaryMult = 0.92 + Math.random() * 0.18;
+        if (analysis.needs.includes(p.pos)) salaryMult += 0.10;
+        if ((p.ovr || 0) >= 95) salaryMult += 0.08;
+        else if ((p.ovr || 0) >= 88) salaryMult += 0.04;
+        if (fit >= 100) salaryMult += 0.05;
+
+        const desired = (p.ask || 1) * salaryMult;
+        const salary = capPlayerSalary(Math.min(capSpace, Math.max(minimumStarOffer(p), desired)), p.ovr, p.awards);
+        if (salary <= 0 || salary > capSpace) continue;
+        offers.push({ teamId: team.id, teamName: team.name, salary, years: p.yearsAsk });
+    }
+
+    return offers;
+}
+
+function getBestValidOffer(g, p) {
+    return (p.offers || [])
+        .filter(o => {
+            const team = g.league.teams.find(t => t.id === o.teamId);
+            return team && team.roster.length < 15 && (team.cap.cap - team.cap.payroll) >= o.salary;
+        })
+        .sort((a, b) => {
+            const teamA = g.league.teams.find(t => t.id === a.teamId);
+            const teamB = g.league.teams.find(t => t.id === b.teamId);
+            return scoreFreeAgentOffer(p, b, teamB, g) - scoreFreeAgentOffer(p, a, teamA, g);
+        })[0];
+}
+
+function freeAgentUrgency(p, faRound) {
+    const ovr = p.ovr || 0;
+    const offerCount = (p.offers || []).length;
+    return ovr * 2 + offerCount * 14 + faRound * 20 + Math.random() * 45;
+}
+
+function minimumStarOffer(p) {
+    const ask = p.ask || 1;
+    const ovr = p.ovr || 0;
+    if (ovr >= 97) return Math.max(18, ask * 0.45);
+    if (ovr >= 92) return Math.max(14, ask * 0.42);
+    if (ovr >= 88) return Math.max(10, ask * 0.38);
+    return Math.min(ask, 1);
+}
+
+function signEliteHoldouts(g) {
+    const fa = g.offseason.freeAgents;
+    if (!fa) return;
+    const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
+    const eliteHoldouts = (fa.pool || [])
+        .filter(p => !p.signedByTeamId && (p.ovr || 0) >= 88)
+        .sort((a, b) => b.ovr - a.ovr);
+
+    for (const p of eliteHoldouts) {
+        p.offers = buildCpuOffersForPlayer(g, p, cpuTeams);
+        let best = getBestValidOffer(g, p);
+        if (!best) best = buildDiscountStarOffer(g, p);
+        if (!best) continue;
+        signPlayer(p, best.teamId, best.salary, best.years, "Took best available star deal");
+    }
+}
+
+function buildDiscountStarOffer(g, p) {
+    const userTeamId = g.league.teams[g.userTeamIndex]?.id;
+    const candidates = g.league.teams
+        .filter(t => t.id !== userTeamId)
+        .filter(t => t.roster.length < 15)
+        .map(t => {
+            const capSpace = t.cap.cap - t.cap.payroll;
+            return { team: t, capSpace, fit: scoreFreeAgentFit(p, t, g, analyzeTeamNeeds(t, g)) };
+        })
+        .filter(x => x.capSpace >= minimumStarOffer(p))
+        .sort((a, b) => b.fit - a.fit || b.capSpace - a.capSpace);
+    const best = candidates[0];
+    if (!best) return null;
+    return {
+        teamId: best.team.id,
+        teamName: best.team.name,
+        salary: capPlayerSalary(Math.min(best.capSpace, Math.max(minimumStarOffer(p), (p.ask || 1) * 0.55)), p.ovr, p.awards),
+        years: Math.max(1, Math.min(p.yearsAsk || 1, 3))
+    };
+}
+
+function fillCpuRosterHoles(g){
     const fa = g.offseason.freeAgents;
     const cpuTeams = g.league.teams.filter(t => t.id !== g.league.teams[g.userTeamIndex].id);
 

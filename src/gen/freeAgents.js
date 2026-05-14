@@ -1,5 +1,5 @@
 import { rng, seedFromString, pick, id, clamp } from "../utils.js";
-import { calculateSalary } from "./players.js"; 
+import { calculateSalary, capPlayerSalary } from "./players.js"; 
 
 const FIRST = [
   "Jalen","Marcus","Isaiah","Noah","Liam","Ethan","Mason","Aiden","Kai","Leo",
@@ -58,7 +58,7 @@ export function generateFreeAgents({ year=2020, count=80, seed="fa" } = {}){ // 
 
     let ask = calculateSalary(finalOvr, age);
     const greed = 0.9 + r() * 0.2; 
-    ask = Number((ask * greed).toFixed(2));
+    ask = capPlayerSalary(ask * greed, finalOvr);
 
     const careerStats = [];
     
