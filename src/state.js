@@ -284,7 +284,9 @@ export function startFreeAgency(){
   g.offseason.freeAgents = {
     cap: SALARY_CAP,
     pool: combinedPool,
-    round: 1
+    round: 1,
+    signings: [],
+    resultsReady: false
   };
 
   generateInitialOffers(g);

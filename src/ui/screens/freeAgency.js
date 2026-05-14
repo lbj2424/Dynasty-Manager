@@ -26,6 +26,12 @@ export function FreeAgencyScreen(){
   const fa = g.offseason.freeAgents;
   const team = g.league.teams[g.userTeamIndex];
   const capSpace = Math.max(0, team.cap.cap - team.cap.payroll);
+  const faRound = fa.round ?? 1;
+
+  if (fa.resultsReady) {
+    root.appendChild(renderFreeAgencyResults(g, fa));
+    return root;
+  }
 
   // FILTERS
   const posOpts = ["All", "PG", "SG", "SF", "PF", "C"];
@@ -87,7 +93,6 @@ export function FreeAgencyScreen(){
     ]);
   });
 
-  const faRound = g.offseason.freeAgents.round ?? 1;
   const roundLabel = `FA Week ${faRound} of 3`;
 
   root.appendChild(card("Free Agency", `Cap Space: $${capSpace.toFixed(2)}M  ·  ${roundLabel}`, [
@@ -119,12 +124,18 @@ export function FreeAgencyScreen(){
             }
           })
         : el("span", { style:"opacity:0.5; font-size:0.9em;" }, "FA market has settled (Week 3 of 3)"),
-      button("Finish Free Agency -> Draft", {
+      button(faRound >= 3 ? "Resolve FA Results" : "Finish Free Agency -> Draft", {
         primary: true,
         onClick: () => {
           simCpuFreeAgency(g);
-          startDraft();
-          location.hash = "#/draft";
+          if (faRound >= 3) {
+            fa.resultsReady = true;
+            saveToSlot(getActiveSaveSlot() || "A");
+            rerender(root);
+          } else {
+            startDraft();
+            location.hash = "#/draft";
+          }
         }
       })
     ])
@@ -216,7 +227,7 @@ function showNegotiationModal(p, team, g, onClose){
                 const roll = Math.random() * 100;
                 if (roll <= chance) {
                     alert(`Success! ${p.name} accepted your offer.`);
-                    signPlayer(p, team.id, offerSalary, offerYears);
+                    signPlayer(p, team.id, offerSalary, offerYears, "Signed with your team");
                     document.body.removeChild(overlay);
                     onClose();
                 } else {
@@ -224,7 +235,7 @@ function showNegotiationModal(p, team, g, onClose){
                         p.offers.sort((a,b) => (b.salary * (1+0.1*b.years)) - (a.salary * (1+0.1*a.years)));
                         const best = p.offers[0];
                         alert(`Offer Rejected! ${p.name} signed with ${best.teamName} instead.`);
-                        signPlayer(p, best.teamId, best.salary, best.years);
+                        signPlayer(p, best.teamId, best.salary, best.years, "Chose a competing offer");
                     } else {
                         alert("Offer Rejected. They think they can do better.");
                     }
@@ -240,9 +251,91 @@ function showNegotiationModal(p, team, g, onClose){
     document.body.appendChild(overlay);
 }
 
+function renderFreeAgencyResults(g, fa) {
+    const signings = (fa.signings || []).slice().sort((a, b) => b.ovr - a.ovr || b.salary - a.salary);
+    const unsigned = (fa.pool || [])
+        .filter(p => !p.signedByTeamId)
+        .slice()
+        .sort((a, b) => b.ovr - a.ovr)
+        .slice(0, 25);
+
+    const signingRows = signings.map(x => el("tr", {}, [
+        el("td", {}, el("span", {
+            style: "cursor:pointer; text-decoration:underline; color:var(--accent);",
+            onclick: () => showPlayerModal(x.player)
+        }, x.playerName)),
+        el("td", {}, x.pos),
+        el("td", { style:"font-weight:bold;" }, String(x.ovr)),
+        el("td", {}, String(x.age)),
+        el("td", {}, x.teamName),
+        el("td", {}, `$${x.salary}M / ${x.years}y`),
+        el("td", {}, x.reason || "Signed")
+    ]));
+
+    const unsignedRows = unsigned.map(p => el("tr", {}, [
+        el("td", {}, el("span", {
+            style: "cursor:pointer; text-decoration:underline; color:var(--accent);",
+            onclick: () => showPlayerModal(p)
+        }, p.name)),
+        el("td", {}, p.pos),
+        el("td", { style:"font-weight:bold;" }, String(p.ovr)),
+        el("td", {}, String(p.age)),
+        el("td", {}, `$${p.ask}M / ${p.yearsAsk}y`)
+    ]));
+
+    return el("div", {}, [
+        card("Free Agency Results", `${signings.length} players signed. ${unsigned.length} notable unsigned players remain available next season.`, [
+            el("div", { class:"row" }, [
+                badge(`Year ${g.year}`),
+                badge(`Week 3 complete`),
+                badge(`${signings.filter(x => x.teamId === g.league.teams[g.userTeamIndex]?.id).length} signed by you`)
+            ]),
+            el("div", { class:"sep" }),
+            button("Advance to Draft", {
+                primary: true,
+                onClick: () => {
+                    startDraft();
+                    location.hash = "#/draft";
+                }
+            })
+        ]),
+        card("Signed Players", "Where the market's signed free agents landed.", [
+            el("table", { class:"table" }, [
+                el("thead", {}, el("tr", {}, [
+                    el("th", {}, "Player"),
+                    el("th", {}, "Pos"),
+                    el("th", {}, "OVR"),
+                    el("th", {}, "Age"),
+                    el("th", {}, "Team"),
+                    el("th", {}, "Contract"),
+                    el("th", {}, "Decision")
+                ])),
+                el("tbody", {}, signingRows.length ? signingRows : [
+                    el("tr", {}, [el("td", { colspan:"7" }, "No free agents signed yet.")])
+                ])
+            ])
+        ]),
+        card("Still Available", "These players roll into Available Players after the draft.", [
+            el("table", { class:"table" }, [
+                el("thead", {}, el("tr", {}, [
+                    el("th", {}, "Player"),
+                    el("th", {}, "Pos"),
+                    el("th", {}, "OVR"),
+                    el("th", {}, "Age"),
+                    el("th", {}, "Ask")
+                ])),
+                el("tbody", {}, unsignedRows.length ? unsignedRows : [
+                    el("tr", {}, [el("td", { colspan:"5" }, "No notable unsigned players.")])
+                ])
+            ])
+        ])
+    ]);
+}
+
 // --- FIX: Properly initialize player stats/rotation & SAVE game ---
-function signPlayer(p, teamId, salary, years){
-    const team = getState().game.league.teams.find(t => t.id === teamId);
+function signPlayer(p, teamId, salary, years, reason = "Accepted best offer"){
+    const g = getState().game;
+    const team = g.league.teams.find(t => t.id === teamId);
     if (!team) return;
     if (team.roster.length >= 15) return;
     
@@ -258,10 +351,31 @@ function signPlayer(p, teamId, salary, years){
 
     team.roster.push(p);
     team.cap.payroll = Number(team.roster.reduce((sum,x)=> sum + (x.contract?.salary || 0), 0).toFixed(1));
+    recordFaSigning(g, p, team, salary, years, reason);
 
     // 4. SAVE (Fixes reload issue)
     const slot = getActiveSaveSlot() || "A";
     saveToSlot(slot);
+}
+
+function recordFaSigning(g, p, team, salary, years, reason) {
+    const fa = g.offseason.freeAgents;
+    if (!fa) return;
+    fa.signings ??= [];
+    if (fa.signings.some(x => x.playerId === p.id)) return;
+    fa.signings.push({
+        playerId: p.id,
+        playerName: p.name,
+        player: { ...p, contract: { salary, years } },
+        teamId: team.id,
+        teamName: team.name,
+        pos: p.pos,
+        ovr: p.ovr,
+        age: p.age,
+        salary,
+        years,
+        reason
+    });
 }
 
 function simCpuFreeAgency(g){
@@ -281,7 +395,7 @@ function simCpuFreeAgency(g){
         const best = p.offers[0];
         const team = g.league.teams.find(t => t.id === best.teamId);
         if (team && (team.cap.cap - team.cap.payroll) >= best.salary && team.roster.length < 15) {
-            signPlayer(p, team.id, best.salary, best.years);
+            signPlayer(p, team.id, best.salary, best.years, "Accepted best offer");
         }
     }
 
@@ -306,7 +420,7 @@ function simCpuFreeAgency(g){
                 .sort((a, b) => b.fit - a.fit || b.p.ovr - a.p.ovr)[0]?.p;
 
             if (!pick) break;
-            signPlayer(pick, t.id, pick.ask, pick.yearsAsk);
+            signPlayer(pick, t.id, pick.ask, pick.yearsAsk, "Filled roster need");
             space = t.cap.cap - t.cap.payroll;
         }
 
