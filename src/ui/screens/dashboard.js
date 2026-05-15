@@ -28,10 +28,12 @@ export function DashboardScreen(){
 
   const phaseBadge = badge(`Phase: ${g.phase}`);
   const isFired = g.gm?.status === "fired";
-  const topButtons = [];
+  const primaryButtons = [];
+  const quickButtons = [];
+  const moreButtons = [];
 
   if (!isFired && g.phase === PHASES.REGULAR){
-    topButtons.push(
+    primaryButtons.push(
       button("Advance Week", {
         primary: true,
         onClick: () => {
@@ -53,7 +55,7 @@ export function DashboardScreen(){
     );
 
     if (g.week > g.seasonWeeks){
-      topButtons.push(
+      primaryButtons.push(
         button("Start Playoffs", {
           primary: true,
           onClick: () => {
@@ -66,27 +68,30 @@ export function DashboardScreen(){
   }
 
   if (!isFired && g.phase === PHASES.PLAYOFFS){
-    topButtons.push(button("Go to Playoffs", { primary:true, onClick: () => location.hash = "#/playoffs" }));
+    primaryButtons.push(button("Go to Playoffs", { primary:true, onClick: () => location.hash = "#/playoffs" }));
   }
   if (!isFired && g.phase === PHASES.FREE_AGENCY){
-    topButtons.push(button("Go to Free Agency", { primary:true, onClick: () => location.hash = "#/free-agency" }));
+    primaryButtons.push(button("Go to Free Agency", { primary:true, onClick: () => location.hash = "#/free-agency" }));
   }
   if (!isFired && g.phase === PHASES.DRAFT){
-    topButtons.push(button("Go to Draft", { primary:true, onClick: () => location.hash = "#/draft" }));
+    primaryButtons.push(button("Go to Draft", { primary:true, onClick: () => location.hash = "#/draft" }));
   }
 
-  topButtons.push(
+  quickButtons.push(
     !isFired ? button("My Team", { onClick: () => location.hash = "#/team" }) : null,
     !isFired ? button("Trade", { onClick: () => location.hash = "#/trade" }) : null,
     !isFired && g.phase === PHASES.REGULAR
         ? button(`Available Players${(g.midseasonFaPool?.length > 0) ? ` (${g.midseasonFaPool.length})` : ""}`, { onClick: () => location.hash = "#/available-players" })
         : null,
+    !isFired ? button("Scouting", { onClick: () => location.hash = "#/scouting" }) : null
+  );
+
+  moreButtons.push(
     button("Standings", { onClick: () => location.hash = "#/standings" }),
     button("League Leaders", { onClick: () => location.hash = "#/league-leaders" }),
     button("Player Search", { onClick: () => location.hash = "#/player-search" }),
     button("History", { onClick: () => location.hash = "#/history" }),
     button("Retired", { onClick: () => location.hash = "#/retired" }),
-    !isFired ? button("Go to Scouting", { onClick: () => location.hash = "#/scouting" }) : null,
     g.lastSeasonRecap
         ? button(`Season ${g.lastSeasonRecap.year} Recap`, {
             primary: true,
@@ -140,7 +145,7 @@ export function DashboardScreen(){
           : null
     ].filter(Boolean)),
     el("div", { class:"sep" }),
-    el("div", { class:"row" }, topButtons.filter(Boolean)),
+    dashboardActions(primaryButtons, quickButtons, moreButtons),
     el("div", { class:"sep" }),
     gmStatusPanel(g, root),
     rosterRulePanel(g),
@@ -162,8 +167,21 @@ export function DashboardScreen(){
   return root;
 }
 
-// GM career panel — contract, owner approval, current season expectation, reputations.
-// Fired GMs see a Career Over panel plus any wilderness offers in the job market.
+function dashboardActions(primaryButtons, quickButtons, moreButtons) {
+  const primary = primaryButtons.filter(Boolean);
+  const quick = quickButtons.filter(Boolean);
+  const more = moreButtons.filter(Boolean);
+
+  return el("div", { class:"dashboardActions" }, [
+    primary.length ? el("div", { class:"dashboardPrimaryActions" }, primary) : null,
+    quick.length ? el("div", { class:"dashboardQuickActions" }, quick) : null,
+    more.length ? el("details", { class:"dashboardMore" }, [
+      el("summary", {}, "More"),
+      el("div", { class:"dashboardMoreGrid" }, more)
+    ]) : null
+  ].filter(Boolean));
+}
+
 function rosterRulePanel(g) {
   const issue = getUserRosterRuleIssue(g);
   if (!issue) return null;
@@ -181,6 +199,8 @@ function rosterRulePanel(g) {
   ]);
 }
 
+// GM career panel — contract, owner approval, current season expectation, reputations.
+// Fired GMs see a Career Over panel plus any wilderness offers in the job market.
 function gmStatusPanel(g, root) {
     const gm = g.gm;
     if (!gm) return null;

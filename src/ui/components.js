@@ -39,9 +39,13 @@ export function badge(text){
   return el("span", { class:"badge" }, text);
 }
 
-export function button(text, { primary=false, danger=false, small=false, onClick } = {}){
+export function button(text, { primary=false, danger=false, small=false, onClick, style, disabled=false } = {}){
   const cls = ["btn", primary && "btnPrimary", danger && "btnDanger", small && "btnSmall"].filter(Boolean).join(" ");
-  return el("button", { class: cls, onclick: onClick }, text);
+  const attrs = { class: cls };
+  if (onClick) attrs.onclick = onClick;
+  if (style) attrs.style = style;
+  if (disabled) attrs.disabled = true;
+  return el("button", attrs, text);
 }
 
 export function interestBar(value0to100){
